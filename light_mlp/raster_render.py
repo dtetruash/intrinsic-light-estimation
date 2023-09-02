@@ -11,6 +11,7 @@ def echo(text):
 print("boo")
 echo('World')
 
+True
 
 b = []
 for i in tqdm(range(1000000000)):
