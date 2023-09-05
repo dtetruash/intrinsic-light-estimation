@@ -88,54 +88,79 @@ def read_16bit(img_name):
     rgbd[..., -1] = bgrd[..., -1]
     return rgbd
 
-def load_images(image_number, channels=[], lighting=[], depth_scale=1/8, depth_trunc=8):
-    """ Return loaded images.
-    Return a dicts of images loaded via Image.open, and handful of specialized formats
+def load_images(image_number, depth_scale=1/8, depth_trunc=8):
+    """ Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
+    Return a tuple of ndarrays with flattened and occupied pixel attributes and information and handful of specialized formats
+    Also return an rbd image for later use in projecting depth.
     """
-    image_paths = get_image_paths(image_number, channels, lighting)
+    image_paths = get_image_paths(image_number, ['normal', 'albedo', 'depth'])
 
-    # load in color and data images, compute RGBD image, then return
+    # Load image data all as ND arrays
     images = {}
     for channel, path in image_paths.items():
-        if os.path.exists(path):
-            image = Image.open(path)
+        print(f"loading {channel} from {path}")
+        try:
+            if channel in ['normal']:
+                image = read_16bit(path)
+            else:
+                image = np.asarray(Image.open(path))
+
             images[channel] = image
+        except ValueError:
+            print(f"The necessary image channel pass '{channel}' for image '{image_number}' was not found at expeced location {path}")
+            raise
 
-    # FIXME: normals will not be loaded unless 'normals' in channels ... dumb design of a function
+    # Normal
+    image_normal = images['normal'][..., :-1]
 
-    # load normals
-    if 'normal' in image_paths.keys():
-        image_normal = read_16bit(image_paths['normal'])
+    # albdo
+    image_albedo = images['albedo'][..., :-1]
 
-    # Reloading to meet the RGBd creation function requirements on image channels
-    image_combined_rgb = o3d.geometry.Image(np.asarray(images['combined'].convert("RGB")))
+    # get only the alpha from the depth image
+    depth_alpha = images['depth'][..., -1]  # This would be an array in [0,255]
+
+    print(f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }")
+
+    plt.imsave('depth_alpha.png', depth_alpha, vmin=0, vmax=255, cmap='gray')
 
     # invert the depth image to be black -> white as depth increases
-    image_depth = np.asarray(images['depth'])[:, :, -1].astype(np.uint8)
-    depth_raw = remap_depth_black2white(image_depth)
+    depth_remapped, depth_normalization_constant = remap_depth_black2white(depth_alpha)
 
-    image_depth = o3d.geometry.Image(depth_raw)
-    o3d.visualization.draw_geometries([image_depth])
+    print(f"Ater remapping got depth_remapped from {depth_remapped.min()} to {depth_remapped.max()} with mean of {depth_remapped.mean()}. The datatype is { depth_remapped.dtype }")
+
+    plt.imsave('depth_remapped.png', depth_remapped, vmin=0, vmax=255, cmap='gray')
 
     # Make RGBD image intput
     image_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-        image_combined_rgb, image_depth,
+        o3d.geometry.Image(images['combined'][..., :-1]),
+        o3d.geometry.Image(depth_remapped),
         depth_scale=depth_scale,
         depth_trunc=depth_trunc,
         convert_rgb_to_intensity=False)
 
+    # Normalize depth to [0,1] after the rgbd image is created
+    depth_normalized = depth_remapped / depth_normalization_constant
+    print(f"After normalizing got depth_normalized from {depth_normalized.min()} to {depth_normalized.max()} with mean of {depth_normalized.mean()}. The datatype is { depth_normalized.dtype }")
+
+    # FIXME: Find a better way to get the W/H
     W, H = np.asarray(list(images.items())[0][1]).shape[:-1]
 
-    return W, H, images, image_normal, image_rgbd
+    # get image occupancy
+    occupancy_mask = get_occupancy(depth_alpha)
+    print(f"Occumpancy mask of shape {occupancy_mask.shape}, and with {occupancy_mask.sum()} occupied pixels.")
+
+    # return image data (minux alpha) for only occupied pixels for further processing
+
+    return W, H, image_albedo[occupancy_mask], image_normal[occupancy_mask], depth_normalized[occupancy_mask], image_rgbd, occupancy_mask
 
 def remap_depth_black2white(depth_array):
-    # FIXME: Should work on notmalized arrays in [0,1] since then the color depth is irrelevant
-    """Remap an 8-bit depth image where 255 -> near and 0 -> far
-    to the convention that 0 -> near and 255 -> far.
+    """Remap an 8-bit or 16-bit depth image where white -> near and black -> far
+    to the convention that black -> near and white -> far.
     """
     bit_depth = 8 if depth_array.dtype == np.uint8 else 16
-    print(f"Bit depth used for depth remapping was {bit_depth}")
-    return -depth_array + (bit_depth**2 - 1)
+    max_value = (2**bit_depth - 1)
+    print(f"Bit depth used for depth remapping was {bit_depth} and a max values of {max_value}")
+    return -depth_array + max_value, max_value
 
 def get_focal(width, camera_angle_x):
     return .5 * width / np.tan(.5 * camera_angle_x)
@@ -236,7 +261,7 @@ def compute_light_vectors(posed_points, light_location):
     as well as their squared norms."""
     # a[occupied_mask].shape == posed_points.shape
     light_vectors = light_location - posed_points
-    print(f"shapes: l_v:{light_vectors}, l_l : {light_location.shape}, p_p : {posed_points.shape}")
+    print(f"shapes: l_v:{light_vectors.shape}, l_l : {light_location.shape}, p_p : {posed_points.shape}")
 
     # Get norms of the light vectors
     light_norms = np.linalg.norm(light_vectors, axis=-1)
@@ -267,7 +292,7 @@ def shade_albedo(albedo, shading):
     return image
 
 def compute_raster(world_normals, albedo, posed_points, light_location, camera_center, light_power=50):
-    """
+    """                                                                                m
     world_normals : ndarray of per-pixel normals (N, 3)
     albedo        : ndattay of per-pixels albedo (N, 3)
     occupied_mask : ndarray of per-pixel occupancy (N,)
@@ -277,13 +302,12 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
 
     # shapes
     assert world_normals.shape == albedo.shape
-    shape = world_normals.shape[:-1]
 
+    print(f"in compute_raster: posed_points - {posed_points.shape}, light_location: {light_location.shape}")
     # #### Get Light Distances for First Light
 
-    print(f'output shape is {shape}')
     light_vectors, light_vector_norms_sqr = compute_light_vectors(posed_points, light_location)
-    viewing_vectors, viewing_norms = compute_light_vectors(posed_points, camera_center)
+    viewing_vectors, viewing_norms = compute_viewing_vectors(posed_points, camera_center)
 
     shading = compute_clipped_dot_prod(light_vectors, world_normals)
     viewing_foreshortening = compute_clipped_dot_prod(viewing_vectors, world_normals)
@@ -292,7 +316,7 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
     # geometric_term = np.zeros(shape)
     # geometric_term[occupied_mask] = light_power / (light_vector_norms_sqr[occupied_mask] * np.pi * 4.0 + 1e-5)
 
-    return shade_albedo(albedo, shading) * viewing_foreshortening[..., np.newaxis], (light_vectors, light_vector_norms_sqr)
+    return shade_albedo(albedo, shading) * viewing_foreshortening[..., np.newaxis], (light_vectors, light_vector_norms_sqr), (viewing_vectors, viewing_norms)
 
 def get_occupancy(depth_image):
     """Get the occupancy of the image sample i.e., there where there is finite depth and therefore a surface.
@@ -316,9 +340,7 @@ def create_raster_images(flatten=False):
     image_number = int(config['images']['image_number'])
 
     # Loading Images
-    W, H, images, image_normal, image_rgbd = load_images(
-        image_number,
-        channels=['albedo', 'depth', 'normal'])
+    W, H, image_albedo, image_normal, depth_remapped, image_rgbd, occupency_mask = load_images(image_number)
 
     # Loading Lights and Light Transforms
     with open(config['paths']['lights_file'], 'r') as lf:
@@ -341,21 +363,16 @@ def create_raster_images(flatten=False):
     print(intrinsics.intrinsic_matrix)
 
     # ## Creating Point Cloud
-    occupied_mask = get_occupancy(np.asarray(images['depth']))
-    print(f"There are {occupied_mask.sum()} points with finite depth in the image.")
+    print(f"There are {occupency_mask.sum()} points with finite depth in the image.")
 
     # ### Using Open3D RGBD + Point Cloud
     posed_points = project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w)
-
-    # impose the shape to be (N, 3)
-    posed_points = posed_points[occupied_mask.reshape(-1)].reshape(-1, 3)
-    print(f"Posed_points shape in raster: {posed_points.shape}")
+    print(f"After posing, we have posed_points of shape {posed_points.shape} and size {posed_points.size}")
 
     # Raster Rendering
-    albedo = np.asarray(images['albedo'])[..., :3].astype(np.float32) / 255.
 
     # Get Normals
-    camera_normals = get_camera_space_normals(image_normal) * occupied_mask[..., np.newaxis]
+    camera_normals = get_camera_space_normals(image_normal)
     world_normals = get_world_space_normals(camera_normals, R)
 
     # do this for the given light orientations, populate dict for output
@@ -365,18 +382,21 @@ def create_raster_images(flatten=False):
     #     output_rasters.update(light_name, raster_image)
 
     output_rasters = [
-        [light_name, compute_raster(world_normals, albedo, occupied_mask, posed_points, light_location, T)]
+        [light_name, compute_raster(world_normals, image_albedo, posed_points, light_location, T)[0]]
         for (light_name, light_location) in light_locations.items()
     ]
 
-    return output_rasters
+    return output_rasters, occupency_mask
 
 
 if __name__ == "__main__":
 
-    raster_images = create_raster_images()
+    raster_images, occupency_mask = create_raster_images()
 
     # TODO: Add output name
-    for light_name, image in raster_images.items():
+    for light_name, image in raster_images:
+        print(f"{light_name}: {image.min()}, {image.mean()}, {image.max()}")
         output_name = f"raster_{light_name}.png"
-        plt.imsave('raster.png', image)
+        image_container = np.ones((800, 800, 3)) * 255
+        image_container[occupency_mask] = image
+        plt.imsave(output_name, image_container.astype(np.uint8))

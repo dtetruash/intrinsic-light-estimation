@@ -8,64 +8,6 @@ import raster_relight as rr
 import open3d as o3d
 
 
-def load_images(image_number, depth_scale=1/8, depth_trunc=8):
-    """ Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
-    Return a tuple of ndarrays with flattened and occupied pixel attributes and information and handful of specialized formats
-    Also return an rbd image for later use in projecting depth.
-    """
-    image_paths = rr.get_image_paths(image_number, ['normal', 'albedo', 'depth'])
-
-    # Load image data
-    images = {}
-    for channel, path in image_paths.items():
-        print(f"loading {channel} from {path}")
-        try:
-            if channel in ['normal']:
-                image = rr.read_16bit(path)
-            else:
-                image = np.asarray(Image.open(path))
-
-            images[channel] = image
-        except ValueError:
-            print(f"The necessary image channel pass '{channel}' for image '{image_number}' was not found at expeced location {path}")
-            raise
-
-    # Normal
-    image_normal = images['normal'][..., :-1]
-
-    # albdo
-    image_albedo = images['albedo'][..., :-1]
-
-    # get only the alpha from the depth image
-    depth_alpha = images['depth'][..., -1].astype(np.uint8)
-
-    # invert the depth image to be black -> white as depth increases
-    # TODO: upgrade depth images to 16-bit
-    depth_remapped = rr.remap_depth_black2white(depth_alpha)
-
-    # Make RGBD image intput
-    image_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-        o3d.geometry.Image(images['combined'][..., :-1]),
-        o3d.geometry.Image(depth_remapped),
-        depth_scale=depth_scale,
-        depth_trunc=depth_trunc,
-        convert_rgb_to_intensity=False)
-
-    # FIXME: Find a better way to get the W/H
-    W, H = np.asarray(list(images.items())[0][1]).shape[:-1]
-
-    # get image occupancy
-    occupancy_mask = rr.get_occupancy(depth_alpha)
-    print(f"Occumpancy mask of shape {occupancy_mask.shape}, and with {occupancy_mask.sum()} occupied pixels.")
-
-    # return image data (minux alpha) for only occupied pixels for further processing
-
-    return W, H, image_albedo[occupancy_mask], image_normal[occupancy_mask], depth_remapped[occupancy_mask], image_rgbd, occupancy_mask
-
-
-# +
-#
-# get the light location per scene
 def get_light_info(config):
     with open(config['paths']['lights_file'], 'r') as lf:
         lights_info = json.loads(lf.read())
@@ -93,7 +35,7 @@ class RasterDataset(Dataset):
         # TOOD: make the image_number range
         image_number = 0
         # get all of the data attrs and load in the image cache
-        W, H, albedo, normal_pixels, depth, rgbd, self._occupancy_mask = load_images(image_number)
+        W, H, albedo, normal_pixels, depth, rgbd, self._occupancy_mask = rr.load_images(image_number)
 
         print(f"Normal pixels range from {normal_pixels.min()} to {normal_pixels.max()}")
 
@@ -120,6 +62,8 @@ class RasterDataset(Dataset):
                                                          image_number,
                                                          image_transforms)
 
+        self._camera_center = T
+
         # Transform notmal pixel valuse from pixel values to world normals
         print(f"Normals pixels shape: {normal_pixels.shape}")
         camera_normals = rr.get_camera_space_normals(normal_pixels)
@@ -136,12 +80,9 @@ class RasterDataset(Dataset):
 
         # project depth to get 3d coords
         # For now, and testing, we save the full point cloud object
-        # FIXME: Posed points should not be dense and should give occupied pixels only
         # TODO: Remove full point cloud being stored here
         pcd = rr.project_and_pose_3d_points_via_rgbd(rgbd, intrinsics, c2w, return_array=False)
         posed_points = np.asarray(pcd.points)
-        print(f"posed_points returned by rr has shape {posed_points.shape}")
-        posed_points = posed_points.reshape((800, 800, 3))[self._occupancy_mask]  # FIXME: Here I could equiv. flatten the mask to index the posed_points
 
         pcd.points = o3d.utility.Vector3dVector(posed_points)
         pcd.normals = o3d.utility.Vector3dVector(world_normals)
@@ -155,9 +96,11 @@ class RasterDataset(Dataset):
 
         # create raster images of pixels
         # TODO: remove ligth vecs from here...
-        raster_images, (light_vecs, light_vecs_norms_sq) = rr.compute_raster(world_normals, albedo, posed_points, light_loc)
+        raster_images, (light_vecs, light_vecs_norms_sq), (cam_vecs, cam_vec_norms) = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
         self._light_vecs = light_vecs
         self._light_vecs_norms = np.sqrt(light_vecs_norms_sq)
+        self._cam_vecs = cam_vecs
+        self._cam_vec_norms = cam_vec_norms
 
         # stack attrs together, we should get a (A,N) array, in the order normal, albedo, image
         # transpose such that the shape (N,F,3)
