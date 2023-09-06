@@ -32,17 +32,19 @@ class RasterDataset(Dataset):
     def __init__(self):
         config = rr.parse_config()
 
-        # TOOD: make the image_number range
-        image_number = 0
+        # TODO: make the image_number range
+        image_number = int(config['images']['image_number'])
+
         # get all of the data attrs and load in the image cache
-        W, H, albedo, normal_pixels, depth, rgbd, self._occupancy_mask = rr.load_images(image_number)
+        W, H, image_albedo, normal_pixels, depth, rgbd, self._occupancy_mask = rr.load_images(image_number)
 
         print(f"Normal pixels range from {normal_pixels.min()} to {normal_pixels.max()}")
 
+        # TODO: Remove test image saving
         img_path = 'dl_img'
 
         albedo_img = np.ones((800, 800, 3)) * 255
-        albedo_img[self._occupancy_mask] = albedo
+        albedo_img[self._occupancy_mask] = image_albedo
         plt.imsave(img_path+"/albedo.png", albedo_img.astype(np.uint8))
 
         normal_img = np.ones((800, 800, 3)) * 255
@@ -53,6 +55,7 @@ class RasterDataset(Dataset):
         depth_img[self._occupancy_mask] = depth[..., np.newaxis]
         plt.imsave(img_path+"/depth.png", depth_img.astype(np.uint8))
 
+        # Get image transforms_file
         with open(config['paths']['transforms_file'], 'r') as tf:
             image_transforms = json.loads(tf.read())
 
@@ -68,6 +71,7 @@ class RasterDataset(Dataset):
         print(f"Normals pixels shape: {normal_pixels.shape}")
         camera_normals = rr.get_camera_space_normals(normal_pixels)
 
+        # TODO: Remove saving of images
         camera_normals_img = np.ones((800, 800, 3)) * 255
         camera_normals_img[self._occupancy_mask] = (camera_normals + 1) / 2 * 255
         plt.imsave(img_path+"/camera.png", camera_normals_img.astype(np.uint8))
@@ -84,7 +88,7 @@ class RasterDataset(Dataset):
         pcd = rr.project_and_pose_3d_points_via_rgbd(rgbd, intrinsics, c2w, return_array=False)
         posed_points = np.asarray(pcd.points)
 
-        pcd.points = o3d.utility.Vector3dVector(posed_points)
+        # pcd.points = o3d.utility.Vector3dVector(posed_points)
         pcd.normals = o3d.utility.Vector3dVector(world_normals)
         self._pcd = pcd
 
@@ -94,9 +98,13 @@ class RasterDataset(Dataset):
         light_locations = get_light_info(config)
         light_loc = list(light_locations.values())[0]
 
+        # normalize albedo
+
+        albedo = image_albedo / 255.0
+
         # create raster images of pixels
         # TODO: remove ligth vecs from here...
-        raster_images, (light_vecs, light_vecs_norms_sq), (cam_vecs, cam_vec_norms) = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
+        raster_image_pixels, (light_vecs, light_vecs_norms_sq), (cam_vecs, cam_vec_norms) = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
         self._light_vecs = light_vecs
         self._light_vecs_norms = np.sqrt(light_vecs_norms_sq)
         self._cam_vecs = cam_vecs
@@ -106,7 +114,7 @@ class RasterDataset(Dataset):
         # transpose such that the shape (N,F,3)
         self._world_normals = world_normals
         self._aldedo = albedo
-        self._raster_images = raster_images
+        self._raster_images = raster_image_pixels
 
         # set the target
         self.target = light_loc
@@ -127,3 +135,4 @@ if __name__ == "__main__":
     ds = RasterDataset()
     pprint(list(DataLoader(ds, num_workers=0))[:3])
     print(len(ds))
+# -
