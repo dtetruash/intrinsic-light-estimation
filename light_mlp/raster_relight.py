@@ -1,3 +1,4 @@
+import logging
 import os
 import numpy as np
 import cv2
@@ -10,7 +11,6 @@ from matplotlib import pyplot as plt
 
 from rich.traceback import install as install_rich
 install_rich()
-
 
 # ### Constants and Settings
 #
@@ -31,22 +31,6 @@ def parse_config(config_name='config.ini'):
 
 config = parse_config()
 
-# TODO: mote this to a config dict? or config file
-# Constnats and paths
-
-# SCENE = 'intrinsic_tester_sphere'
-# SPLIT = ''
-# DATASET_PATH = "/home/dtetruash/Thesis/datasets/nerf-blender/nerf_synthetic"
-# SCENE_PATH = f"{DATASET_PATH}/{SCENE}"
-# data_path = f"{SCENE_PATH}/{SPLIT}" if SPLIT else SCENE_PATH
-#
-# LIGHT_ORIENTATION = "bottom"
-#
-# lights_file = f"{SCENE_PATH}/lights_{SCENE}.json"
-# transforms_file = f"{SCENE_PATH}/transforms_{SPLIT}.json" if SPLIT else f"{SCENE_PATH}/transforms.json"
-#
-# image_number = 0
-# -
 
 # Get the transform for the given image
 def get_c2w(image_number, image_transforms):
@@ -68,8 +52,7 @@ def format_image_path(image_number, channel='', light=''):
     img_name += f'_{light}' if light else ''
     return img_name + '.png'
 
-# TODO: Add suport for a dynamic open function.
-def get_image_paths(image_number, channels=[], lighting=[], open_func=Image.open):
+def get_image_paths(image_number, channels=[], lighting=[]):
     """Get an image along with it's given channels."""
 
     # get combined (fully formed) image names in combined images which are given by lighting
@@ -95,14 +78,10 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8):
     """
     image_paths = get_image_paths(image_number, ['normal', 'albedo', 'depth'])
 
-    print("loading images from:")
-    for path in image_paths.values():
-        print(path)
-
     # Load image data all as ND arrays
     images = {}
     for channel, path in image_paths.items():
-        print(f"loading {channel} from {path}")
+        logging.info(f"Loading {channel} from {path}.")
         try:
             if channel in ['normal']:
                 image = read_16bit(path)
@@ -123,14 +102,14 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8):
     # get only the alpha from the depth image
     depth_alpha = images['depth'][..., -1]  # This would be an array in [0,255]
 
-    print(f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }")
+    logging.debug(f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }")
 
     plt.imsave('depth_alpha.png', depth_alpha, vmin=0, vmax=255, cmap='gray')
 
     # invert the depth image to be black -> white as depth increases
     depth_remapped, depth_normalization_constant = remap_depth_black2white(depth_alpha)
 
-    print(f"Ater remapping got depth_remapped from {depth_remapped.min()} to {depth_remapped.max()} with mean of {depth_remapped.mean()}. The datatype is { depth_remapped.dtype }")
+    logging.debug(f"Ater remapping got depth_remapped from {depth_remapped.min()} to {depth_remapped.max()} with mean of {depth_remapped.mean()}. The datatype is { depth_remapped.dtype }")
 
     plt.imsave('depth_remapped.png', depth_remapped, vmin=0, vmax=255, cmap='gray')
 
@@ -141,18 +120,16 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8):
                                                                     depth_trunc=depth_trunc,
                                                                     convert_rgb_to_intensity=False)
 
-    o3d.visualization.draw_geometries([image_rgbd])
-
     # Normalize depth to [0,1] after the rgbd image is created
     depth_normalized = depth_remapped / depth_normalization_constant
-    print(f"After normalizing got depth_normalized from {depth_normalized.min()} to {depth_normalized.max()} with mean of {depth_normalized.mean()}. The datatype is { depth_normalized.dtype }")
+    logging.debug(f"After normalizing got depth_normalized from {depth_normalized.min()} to {depth_normalized.max()} with mean of {depth_normalized.mean()}. The datatype is { depth_normalized.dtype }")
 
     # FIXME: Find a better way to get the W/H
     W, H = np.asarray(list(images.items())[0][1]).shape[:-1]
 
     # get image occupancy
     occupancy_mask = get_occupancy(depth_alpha)
-    print(f"Occumpancy mask of shape {occupancy_mask.shape}, and with {occupancy_mask.sum()} occupied pixels.")
+    logging.debug(f"Occumpancy mask of shape {occupancy_mask.shape}, and with {occupancy_mask.sum()} occupied pixels.")
 
     # return image data (minux alpha) for only occupied pixels for further processing
 
@@ -164,7 +141,7 @@ def remap_depth_black2white(depth_array):
     """
     bit_depth = 8 if depth_array.dtype == np.uint8 else 16
     max_value = (2**bit_depth - 1)
-    print(f"Bit depth used for depth remapping was {bit_depth} and a max values of {max_value}")
+    logging.debug(f"Bit depth used for depth remapping was {bit_depth} and a max values of {max_value}")
     return -depth_array + max_value, max_value
 
 def get_focal(width, camera_angle_x):
@@ -214,26 +191,36 @@ def project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w, return_arra
     pcd.transform(c2w)
     points_posed = np.asarray(pcd.points)
 
-    print(f"Posed_points shape in porject func: {points_posed.shape}")
+    logging.debug(f"Posed_points shape in porject func: {points_posed.shape}")
 
     return points_posed if return_array else pcd
 
 def check_rotation(R):
     # Check the rotation matrix
     det_R = np.linalg.det(R)
-    print(f"det(R) = {det_R}")
+    logging.info(f"det(R) = {det_R}")
     assert np.abs(det_R - 1.0) < 1e-5
 
     Rt_R = R.T @ R
-    print("R^T @ R = ")
-    print(Rt_R)
+    logging.info("R^T @ R = ")
+    logging.info(Rt_R)
     assert np.all(np.abs(Rt_R - np.eye(3)) < 1e-5)
 
-def get_camera_space_normals(camera_normal_pixels, shift=np.array([-0.5]*3), scale=np.array([2.0]*3), color_depth=8):
+def get_camera_space_normals(camera_normal_pixels, shift=np.array([-0.5]*3), scale=np.array([2.0]*3)):
     """
     camera_normal_pixels : ndarray (N,3) of normals encoded as pixel values
     """
     # ### Load camera-space normals and scale them to the correct ranges
+    if camera_normal_pixels.dtype == np.uint8:
+        color_depth = 8
+    elif camera_normal_pixels.dtype == np.uint16:
+        color_depth = 16
+    else:
+        raise ValueError(f"The datatype of given camera normal pixel vaues is {camera_normal_pixels.dtype}. \
+        Only uint8 and uint16 are supported.")
+
+    logging.info(f"Normals were loaded using a color depth of {color_depth}.")
+
     camera_normals_pixels_normalized = camera_normal_pixels / (2**color_depth - 1)  # [0,1]
 
     # Translation and scaling needed to remap to [-1,1], [-1,1], and [-1,0] resp.
@@ -253,11 +240,11 @@ def get_world_space_normals(camera_normals, R):
     """
     # Transform the vectors to world space
     world_normals = np.dot(R, camera_normals.T)
-    print(f"world_normals_shape after posing: {world_normals.shape}")
+    logging.debug(f"world_normals_shape after posing: {world_normals.shape}")
 
     # Reshape the transformed vectors back to the original image shape
     world_normals = world_normals.T.reshape(camera_normals.shape)
-    print(f"world_normals shape after reshaping to camera_normals.shape: {world_normals.shape}")
+    logging.debug(f"world_normals shape after reshaping to camera_normals.shape: {world_normals.shape}")
 
     return world_normals
 
@@ -266,7 +253,7 @@ def compute_light_vectors(posed_points, light_location):
     as well as their squared norms."""
     # a[occupied_mask].shape == posed_points.shape
     light_vectors = light_location - posed_points
-    print(f"shapes: l_v:{light_vectors.shape}, l_l : {light_location.shape}, p_p : {posed_points.shape}")
+    logging.debug(f"shapes: l_v:{light_vectors.shape}, l_l : {light_location.shape}, p_p : {posed_points.shape}")
 
     # Get norms of the light vectors
     light_norms = np.linalg.norm(light_vectors, axis=-1)
@@ -289,15 +276,14 @@ def compute_clipped_dot_prod(vecs_1, vecs_2):
 
 def shade_albedo(albedo, shading):
     # Compute reaster image
-
-    # TODO: add viewing direction cosine.
-
     image = albedo * shading[..., np.newaxis]
 
     return image
 
 def compute_raster(world_normals, albedo, posed_points, light_location, camera_center, light_power=50, apply_viewing_cosine=False):
     """
+    Compute the raster rendering of a collection of posed points with some albedo lit by a pointlight at a know direction.
+
     world_normals : ndarray of per-pixel normals (N, 3) in range [-1,1]^3
     albedo        : ndattay of per-pixels albedo (N, 3) in range [0,1]^3
     occupied_mask : ndarray of per-pixel occupancy (N,) binary
@@ -308,7 +294,7 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
     # shapes
     assert world_normals.shape == albedo.shape
 
-    print(f"in compute_raster: posed_points - {posed_points.shape}, light_location: {light_location.shape}")
+    logging.debug(f"in compute_raster: posed_points - {posed_points.shape}, light_location: {light_location.shape}")
     # #### Get Light Distances for First Light
 
     light_vectors, light_vector_norms_sqr = compute_light_vectors(posed_points, light_location)
@@ -317,18 +303,14 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
     shading = compute_clipped_dot_prod(light_vectors, world_normals)
     viewing_foreshortening = compute_clipped_dot_prod(viewing_vectors, world_normals)
 
-    # TODO: Add geometric attentuation via light_vector_norms_sqr
-    # geometric_term = np.zeros(shape)
-    # geometric_term[occupied_mask] = light_power / (light_vector_norms_sqr[occupied_mask] * np.pi * 4.0 + 1e-5)
-
     raster = shade_albedo(albedo, shading)
 
     if apply_viewing_cosine:
         raster *= viewing_foreshortening[..., np.newaxis]
 
-    print(f"in raster: albedo type is {albedo.dtype} and range in [{albedo.min(), albedo.max()}]")
-    print(f"in raster: shading type is {shading.dtype} and range in [{shading.min(), shading.max()}]")
-    print(f"in raster: raster type is {raster.dtype} and range in [{raster.min(), raster.max()}]")
+    logging.debug(f"in raster: albedo type is {albedo.dtype} and range in [{albedo.min(), albedo.max()}]")
+    logging.debug(f"in raster: shading type is {shading.dtype} and range in [{shading.min(), shading.max()}]")
+    logging.debug(f"in raster: raster type is {raster.dtype} and range in [{raster.min(), raster.max()}]")
 
     return raster, (light_vectors, light_vector_norms_sqr), (viewing_vectors, viewing_norms)
 
@@ -360,7 +342,7 @@ def create_raster_images(flatten=False):
     with open(config['paths']['lights_file'], 'r') as lf:
         lights_info = json.loads(lf.read())
 
-    print(f"Loaded {config['paths']['lights_file']}. Number of lights is {len(lights_info['lights'])}")
+    logging.info(f"Loaded {config['paths']['lights_file']}. Number of lights is {len(lights_info['lights'])}")
 
     light_transforms = {light['name_light'].lower(): np.array(light['transformation_matrix']) for light in lights_info['lights']}
     light_locations = {name: to_translation(transform) for (name, transform) in light_transforms.items()}
@@ -372,16 +354,16 @@ def create_raster_images(flatten=False):
                                                   image_transforms)
     check_rotation(R)
 
-    print("Using the following intrinsics matrix:")
-    print("K = ")
-    print(intrinsics.intrinsic_matrix)
+    logging.info("Using the following intrinsics matrix:")
+    logging.info("K = ")
+    logging.info(intrinsics.intrinsic_matrix)
 
     # ## Creating Point Cloud
-    print(f"There are {occupency_mask.sum()} points with finite depth in the image.")
+    logging.info(f"There are {occupency_mask.sum()} points with finite depth in the image.")
 
     # ### Using Open3D RGBD + Point Cloud
     posed_points = project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w)
-    print(f"After posing, we have posed_points of shape {posed_points.shape} and size {posed_points.size}")
+    logging.debug(f"After posing, we have posed_points of shape {posed_points.shape} and size {posed_points.size}")
 
     # Raster Rendering
 
@@ -397,7 +379,7 @@ def create_raster_images(flatten=False):
 
     # Normalize Albedo to [0.1]
     albedo = image_albedo / 255
-    print(f"in outter: albedo is {albedo.dtype} in range [{albedo.min()}, { albedo.max() }]")
+    logging.debug(f"in outter: albedo is {albedo.dtype} in range [{albedo.min()}, { albedo.max() }]")
     output_rasters = [
         [light_name, compute_raster(world_normals, albedo, posed_points, light_location, T)[0]]
         for (light_name, light_location) in light_locations.items()
@@ -410,9 +392,8 @@ if __name__ == "__main__":
 
     raster_images, occupency_mask = create_raster_images()
 
-    # TODO: Add output name
     for light_name, image in raster_images:
-        print(f"{light_name}: {image.min()}, {image.mean()}, {image.max()}")
+        logging.debug(f"{light_name}: {image.min()}, {image.mean()}, {image.max()}")
         output_name = f"raster_{light_name}.png"
         image_container = np.ones((800, 800, 3))
         image_container[occupency_mask] = image
