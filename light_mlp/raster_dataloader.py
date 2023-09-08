@@ -1,18 +1,20 @@
-from matplotlib import pyplot as plt
 import logging
+import torch
 from torch.utils.data import Dataset
 import json
 import numpy as np
+from tqdm import tqdm
+
 import raster_relight as rr
 
-logging.basicConfig(filename='raster_dataloader.log', encoding='utf-8', level=logging.DEBUG)
-logging.getLogger().addHandler(logging.StreamHandler())
+logging.basicConfig(filename='raster_dataloader.log', encoding='utf-8', level=logging.INFO)
+# logging.getLogger().addHandler(logging.StreamHandler())
 
 def get_light_info(config):
     with open(config['paths']['lights_file'], 'r') as lf:
         lights_info = json.loads(lf.read())
 
-    print(f"Loaded {config['paths']['lights_file']}. Number of lights is {len(lights_info['lights'])}")
+    logging.info(f"raster dataloader: get_lights_info: Loaded {config['paths']['lights_file']}. Number of lights is {len(lights_info['lights'])}")
 
     light_transforms = {light['name_light'].lower(): np.array(light['transformation_matrix']) for light in lights_info['lights']}
     light_locations = {name: rr.to_translation(transform) for (name, transform) in light_transforms.items()}
@@ -29,8 +31,11 @@ def get_light_info(config):
 # We can achieve this by rastering using onlye a sinlge given light direction for now (the one we have, since later we will not be doing rastering)
 
 class RasterDataset(Dataset):
-    def __init__(self):
+    def __init__(self, split='train'):
         config = rr.parse_config()
+
+        if split:
+            config['paths']['split'] = 'train'
 
         # init empty containers
         world_normals_list = []
@@ -56,7 +61,8 @@ class RasterDataset(Dataset):
         # light_loc = light_locations[light_name]
         self._num_lights = len(light_locations)
 
-        for i, frame in enumerate(image_transforms['frames']):
+        for i, frame in tqdm(enumerate(image_transforms['frames']), desc=f"Loading dataset from {config['paths']['scene']}/{config['paths']['split']}"):
+
             logging.info(f"Loading data from image {frame['file_path']}")
 
             image_number = i
@@ -123,11 +129,13 @@ class RasterDataset(Dataset):
 
             logging.info(f"New number of samples after loading image {i} is {self._len}")
 
-        # concat the outputs
-        self._world_normals = np.concatenate(world_normals_list)
-        self._albedo = np.concatenate(aldedo_list)
-        self._raster_images = np.concatenate(raster_images_list)
-        self.target = np.concatenate(target_list)
+        # concat the outputs and make them tensors
+        self._world_normals = torch.as_tensor(np.concatenate(world_normals_list))
+        self._albedo = torch.as_tensor(np.concatenate(aldedo_list))
+        self._raster_images = torch.as_tensor(np.concatenate(raster_images_list))
+
+        self.feats = torch.stack([self._world_normals, self._albedo, self._raster_images], dim=1).float()
+        self.target = torch.as_tensor(np.concatenate(target_list)).float()
 
         self._occupancy_mask = np.stack(occupancy_list)  # TODO: Remove after debugging
         self._end_indexes = end_indexes
@@ -143,7 +151,13 @@ class RasterDataset(Dataset):
 
     def __getitem__(self, index):
         """Get the features of an image pixel as well as the direction from where it is lit form by the index within its image's occupied pixels"""
-        return self._world_normals[index], self._aldedo[index], self._raster_images[index], self.target[index]
+        # feats = torch.cat([self._world_normals[index], self._albedo[index], self._raster_images[index]])
+        feats = self.feats[index]
+        target = self.target[index]
+        # print(F"DEBUG: feats_concat: {self.feats[index]}, {self.feats[index].shape}")
+        # print(F"DEBUG: feats: {feats}, {feats.shape}")
+        # print(f'DEBUG: target: {target.shape}')
+        return feats, target
 
 
 if __name__ == "__main__":
