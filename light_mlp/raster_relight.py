@@ -71,7 +71,10 @@ def read_16bit(img_name):
     rgbd[..., -1] = bgrd[..., -1]
     return rgbd
 
-def load_images(image_number, depth_scale=1/8, depth_trunc=8):
+def downsample_image(image_array, downsample_ratio=2):
+    return
+
+def load_images(image_number, depth_scale=1/8, depth_trunc=8, downsample_ratio=1):
     """ Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
     Return a tuple of ndarrays with flattened and occupied pixel attributes and information and handful of specialized formats
     Also return an rbd image for later use in projecting depth.
@@ -92,6 +95,19 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8):
         except ValueError:
             print(f"The necessary image channel pass '{channel}' for image '{image_number}' was not found at expeced location {path}")
             raise
+
+    # FIXME: Find a better way to get the W/H
+    W, H = np.asarray(list(images.items())[0][1]).shape[:-1]
+
+    # apply downscaling if needed
+    if downsample_ratio > 1:
+        W, H = W//downsample_ratio, H//downsample_ratio
+
+        downsampled_images = {}
+        for channel, image in images.items():
+            downsampled_images[channel] = cv2.resize(image, (W, H), interpolation=cv2.INTER_AREA)
+
+        images = downsampled_images
 
     # Normal
     image_normal = images['normal'][..., :-1]
@@ -124,9 +140,6 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8):
     depth_normalized = depth_remapped / depth_normalization_constant
     logging.debug(f"After normalizing got depth_normalized from {depth_normalized.min()} to {depth_normalized.max()} with mean of {depth_normalized.mean()}. The datatype is { depth_normalized.dtype }")
 
-    # FIXME: Find a better way to get the W/H
-    W, H = np.asarray(list(images.items())[0][1]).shape[:-1]
-
     # get image occupancy
     occupancy_mask = get_occupancy(depth_alpha)
     logging.debug(f"Occumpancy mask of shape {occupancy_mask.shape}, and with {occupancy_mask.sum()} occupied pixels.")
@@ -145,7 +158,8 @@ def remap_depth_black2white(depth_array):
     return -depth_array + max_value, max_value
 
 def get_focal(width, camera_angle_x):
-    return .5 * width / np.tan(.5 * camera_angle_x)
+    focal = .5 * width / np.tan(.5 * camera_angle_x)
+    return focal
 
 def denormalize_depth(depth_image_array, from_min=0, from_max=8):
     raise Exception("This function is deprecated.")
@@ -157,6 +171,7 @@ def denormalize_depth(depth_image_array, from_min=0, from_max=8):
 
 def get_camera_parameters(W, H, camera_angle_x, image_number, image_transforms):
     focal = get_focal(W, camera_angle_x)
+
     c2w = get_c2w(image_number, image_transforms)
     T = to_translation(c2w)
     R = to_rotation(c2w)
@@ -335,8 +350,11 @@ def create_raster_images(flatten=False):
 
     image_number = int(config['images']['image_number'])
 
+    downsample_ratio = int(config['parameters']['downsample_ratio'])
+
     # Loading Images
-    W, H, image_albedo, image_normal, depth_remapped, image_rgbd, occupency_mask = load_images(image_number)
+    W, H, image_albedo, image_normal, depth_remapped, image_rgbd, occupency_mask = load_images(image_number, downsample_ratio=downsample_ratio)
+    logging.info(f"Loaded images of size ({W},{H}).")
 
     # Loading Lights and Light Transforms
     with open(config['paths']['lights_file'], 'r') as lf:
@@ -378,23 +396,23 @@ def create_raster_images(flatten=False):
     #     output_rasters.update(light_name, raster_image)
 
     # Normalize Albedo to [0.1]
-    albedo = image_albedo / 255
+    albedo = image_albedo / 255.
     logging.debug(f"in outter: albedo is {albedo.dtype} in range [{albedo.min()}, { albedo.max() }]")
     output_rasters = [
         [light_name, compute_raster(world_normals, albedo, posed_points, light_location, T)[0]]
         for (light_name, light_location) in light_locations.items()
     ]
 
-    return output_rasters, occupency_mask
+    return output_rasters, occupency_mask, W, H
 
 
 if __name__ == "__main__":
 
-    raster_images, occupency_mask = create_raster_images()
+    raster_images, occupency_mask, W, H = create_raster_images()
 
     for light_name, image in raster_images:
         logging.debug(f"{light_name}: {image.min()}, {image.mean()}, {image.max()}")
         output_name = f"raster_{light_name}.png"
-        image_container = np.ones((800, 800, 3))
+        image_container = np.ones((W, H, 3))
         image_container[occupency_mask] = image
         plt.imsave(output_name, image_container)
