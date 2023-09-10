@@ -114,20 +114,20 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8, downsample_ratio=1
 
     # albdo
     image_albedo = images['albedo'][..., :-1]
-    plt.imsave('albedo_in_relight_load.png', image_albedo)
+    # plt.imsave('albedo_in_relight_load.png', image_albedo)
     # get only the alpha from the depth image
     depth_alpha = images['depth'][..., -1]  # This would be an array in [0,255]
 
     logging.debug(f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }")
 
-    plt.imsave('depth_alpha.png', depth_alpha, vmin=0, vmax=255, cmap='gray')
+    # plt.imsave('depth_alpha.png', depth_alpha, vmin=0, vmax=255, cmap='gray')
 
     # invert the depth image to be black -> white as depth increases
     depth_remapped, depth_normalization_constant = remap_depth_black2white(depth_alpha)
 
     logging.debug(f"Ater remapping got depth_remapped from {depth_remapped.min()} to {depth_remapped.max()} with mean of {depth_remapped.mean()}. The datatype is { depth_remapped.dtype }")
 
-    plt.imsave('depth_remapped.png', depth_remapped, vmin=0, vmax=255, cmap='gray')
+    # plt.imsave('depth_remapped.png', depth_remapped, vmin=0, vmax=255, cmap='gray')
 
     # Make RGBD image intput
     # TODO: Replace this with just the projection and no color
@@ -328,6 +328,12 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
     logging.debug(f"in raster: raster type is {raster.dtype} and range in [{raster.min(), raster.max()}]")
 
     return raster, (light_vectors, light_vector_norms_sqr), (viewing_vectors, viewing_norms)
+
+def raster_from_directions(light_dirs, albedo, world_normals):
+    shading = compute_clipped_dot_prod(light_dirs, world_normals)
+    print(f"shading has shape of {shading.shape} and type {shading.dtype}")
+    raster = shade_albedo(shading, albedo)
+    return raster
 
 def get_occupancy(depth_image):
     """Get the occupancy of the image sample i.e., there where there is finite depth and therefore a surface.

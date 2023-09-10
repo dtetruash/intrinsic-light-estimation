@@ -35,7 +35,9 @@ class RasterDataset(Dataset):
         config = rr.parse_config()
 
         if split:
-            config['paths']['split'] = 'train'
+            config['paths']['split'] = split
+        else:
+            raise ValueError(f"Split must be either 'train' or 'val' or 'test'.")
 
         # init empty containers
         world_normals_list = []
@@ -52,23 +54,27 @@ class RasterDataset(Dataset):
 
         camera_angle_x = image_transforms["camera_angle_x"]
 
-        # get light location
-        # TODO: Specify the light name through the config
-        # TODO: loop over all light locations to get all OLAT samples for training
+        downsample_ratio = int(config['parameters']['downsample_ratio'])
+
         light_locations = get_light_info(config)
         logging.debug(f"lights were: {light_locations}")
-        # light_name = config['lighting']['light_name']
-        # light_loc = light_locations[light_name]
+
+        self._lights_info = light_locations
         self._num_lights = len(light_locations)
 
-        for i, frame in tqdm(enumerate(image_transforms['frames']), desc=f"Loading dataset from {config['paths']['scene']}/{config['paths']['split']}"):
+        self.num_frames = len(image_transforms['frames'])
+
+        self.attributes = []
+
+        for i, frame in tqdm(enumerate(image_transforms['frames']),
+                             desc=f"Loading dataset from {config['paths']['scene']}/{config['paths']['split']}", total=self.num_frames):
 
             logging.info(f"Loading data from image {frame['file_path']}")
 
             image_number = i
 
             # get all of the data attrs and load in the image cache
-            W, H, image_albedo, normal_pixels, depth, rgbd, occupancy_mask = rr.load_images(image_number)
+            W, H, image_albedo, normal_pixels, depth, rgbd, occupancy_mask = rr.load_images(image_number, downsample_ratio=downsample_ratio)
 
             logging.debug(f"Normal pixels range from {normal_pixels.min()} to {normal_pixels.max()}")
 
@@ -99,6 +105,7 @@ class RasterDataset(Dataset):
             # normalize albedo
             albedo = image_albedo / 255.0
 
+            image_attributes = {}
             for light in light_locations:
                 # create raster images of pixels for the loaded image
                 light_loc = light_locations[light]
@@ -108,11 +115,10 @@ class RasterDataset(Dataset):
                 # set the target. Keep consistent with inputs
                 target_list += [np.broadcast_to(light_loc, (num_samples_per_light, 3))]
 
-            # view raster for sanity:
-            # TODO: remove after testing
-            # raster_save = np.ones((W, H, 3))
-            # raster_save[self._occupancy_mask] = raster_image_pixels
-            # plt.imsave(f'sanity/{i}_{light_name}.png', raster_save)
+                # add attributed and raster for later use
+                image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, occupancy_mask)
+
+            self.attributes.append(image_attributes)
 
             # save output
             added_samples = num_samples_per_light * self._num_lights
