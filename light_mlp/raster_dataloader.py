@@ -37,7 +37,7 @@ class RasterDataset(Dataset):
         if split:
             config['paths']['split'] = split
         else:
-            raise ValueError(f"Split must be either 'train' or 'val' or 'test'.")
+            raise ValueError(f"Split must be either 'train' or 'val' or 'test' and was {split}")
 
         # init empty containers
         world_normals_list = []

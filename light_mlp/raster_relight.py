@@ -291,8 +291,8 @@ def compute_clipped_dot_prod(vecs_1, vecs_2):
 
 def shade_albedo(albedo, shading):
     # Compute reaster image
-    image = albedo * shading[..., np.newaxis]
-
+    image = np.empty_like(albedo)
+    np.multiply(albedo, shading[:, np.newaxis], image)
     return image
 
 def compute_raster(world_normals, albedo, posed_points, light_location, camera_center, light_power=50, apply_viewing_cosine=False):
@@ -331,8 +331,7 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
 
 def raster_from_directions(light_dirs, albedo, world_normals):
     shading = compute_clipped_dot_prod(light_dirs, world_normals)
-    print(f"shading has shape of {shading.shape} and type {shading.dtype}")
-    raster = shade_albedo(shading, albedo)
+    raster = shade_albedo(albedo, shading)
     return raster
 
 def get_occupancy(depth_image):
