@@ -109,14 +109,15 @@ class RasterDataset(Dataset):
             for light in light_locations:
                 # create raster images of pixels for the loaded image
                 light_loc = light_locations[light]
-                raster_image_pixels, _, _ = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
+                raster_image_pixels, (light_vectors, _), _ = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
                 raster_images_list += [raster_image_pixels]
 
                 # set the target. Keep consistent with inputs
-                target_list += [np.broadcast_to(light_loc, (num_samples_per_light, 3))]
+                # must be computed per pixel using its posed_point
+                target_list += [light_vectors]
 
                 # add attributed and raster for later use
-                image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, occupancy_mask)
+                image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, posed_points, occupancy_mask)
 
             self.attributes.append(image_attributes)
 
