@@ -119,11 +119,6 @@ class RasterDataset(Dataset):
                 # must be computed per pixel using its posed_point
                 target_list += [light_vectors]
 
-                print(f"In DL: image {image_number}; light {light}: light_vectors {light_vectors.shape}")
-                normed_norms = np.linalg.norm(light_vectors, axis=-1)
-                if normed_norms.max() > 1.0:
-                    print(f"IN DL: light vec has norm of {normed_norms.max()}")
-
                 # add attributed and raster for later use
                 image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, posed_points, light_vectors, occupancy_mask)
 
