@@ -4,6 +4,7 @@ from torch.utils.data import Dataset
 import json
 import numpy as np
 from tqdm import tqdm
+import open3d as o3d
 
 import raster_relight as rr
 
@@ -110,14 +111,21 @@ class RasterDataset(Dataset):
                 # create raster images of pixels for the loaded image
                 light_loc = light_locations[light]
                 raster_image_pixels, (light_vectors, _), _ = rr.compute_raster(world_normals, albedo, posed_points, light_loc, T)
+                # print(f"In DL: raster_pixels: {raster_image_pixels.min()}, {raster_image_pixels.max()}, {raster_image_pixels.shape}")
+                # print(f"In DL: light_vectors: {light_vectors.min()}, {light_vectors.max()}, {light_vectors.shape}")
                 raster_images_list += [raster_image_pixels]
 
                 # set the target. Keep consistent with inputs
                 # must be computed per pixel using its posed_point
                 target_list += [light_vectors]
 
+                print(f"In DL: image {image_number}; light {light}: light_vectors {light_vectors.shape}")
+                normed_norms = np.linalg.norm(light_vectors, axis=-1)
+                if normed_norms.max() > 1.0:
+                    print(f"IN DL: light vec has norm of {normed_norms.max()}")
+
                 # add attributed and raster for later use
-                image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, posed_points, occupancy_mask)
+                image_attributes[light] = (W, H, raster_image_pixels, world_normals, albedo, posed_points, light_vectors, occupancy_mask)
 
             self.attributes.append(image_attributes)
 
