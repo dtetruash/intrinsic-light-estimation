@@ -305,7 +305,7 @@ def carry_out_training():
 
 if __name__ == "__main__":
 
-    project_name = "light-mlp-supervised-cosine"
+    project_name = "light-mlp-supervised-sweep"
 
     raster_config = rr.parse_config()
 
@@ -349,7 +349,7 @@ if __name__ == "__main__":
     # non-sweep parameters
     sweep_configuration['parameters'].update({
         'epochs': {'value': 3},
-        'data_subset_fraction': {'value': 64},
+        'data_subset_fraction': {'value': 1},
         'model_checkpoint_path': {'value': 'model_checkpoints'},
         'model_trained_path': {'value': 'model_trained'},
         'scene': {'value': raster_config['paths']['scene']}
