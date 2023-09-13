@@ -241,7 +241,7 @@ def carry_out_training():
 
         # Construct model, optimizer, and loss
         # model = LightMLP(config.num_feats, config.hidden_channels, dropout=config.dropout)
-        model = get_model(config.num_feats, config.num_layers, config.layer_size, config.dropout)
+        model = get_model(config.num_feats, config.num_layers, config.layer_size, config.dropout).to(device)
         optimizer = get_optimizer(config.optimizer, model, config.learning_rate)
         loss_func = get_loss_func(config.loss_func, config.unitarity_lambda)
 
