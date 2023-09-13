@@ -74,7 +74,7 @@ def read_16bit(img_name):
 def downsample_image(image_array, downsample_ratio=2):
     return
 
-def load_images(image_number, depth_scale=1/8, depth_trunc=8, downsample_ratio=1):
+def load_images(image_number, depth_scale=1/8, depth_trunc=8.0, downsample_ratio=1):
     """ Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
     Return a tuple of ndarrays with flattened and occupied pixel attributes and information and handful of specialized formats
     Also return an rbd image for later use in projecting depth.
@@ -105,7 +105,7 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8, downsample_ratio=1
 
         downsampled_images = {}
         for channel, image in images.items():
-            downsampled_images[channel] = cv2.resize(image, (W, H), interpolation=cv2.INTER_AREA)
+            downsampled_images[channel] = cv2.resize(image, (W, H), interpolation=cv2.INTER_NEAREST)
 
         images = downsampled_images
 
@@ -135,6 +135,8 @@ def load_images(image_number, depth_scale=1/8, depth_trunc=8, downsample_ratio=1
                                                                     depth_scale=depth_scale,
                                                                     depth_trunc=depth_trunc,
                                                                     convert_rgb_to_intensity=False)
+
+    # o3d.visualization.draw_geometries([o3d.geometry.Image(images['albedo'][..., :-1]), o3d.geometry.Image(depth_remapped)])
 
     # Normalize depth to [0,1] after the rgbd image is created
     depth_normalized = depth_remapped / depth_normalization_constant
@@ -274,7 +276,9 @@ def compute_light_vectors(posed_points, light_location):
     light_norms = np.linalg.norm(light_vectors, axis=-1)
     light_norms_sqr = np.square(light_norms)
 
-    return light_vectors / light_norms[..., np.newaxis], light_norms_sqr
+    normalized_light_vectors = light_vectors / light_norms[..., np.newaxis]
+
+    return normalized_light_vectors, light_norms_sqr
 
 def compute_viewing_vectors(posed_points, camera_center):
     # FIXME: Merge with the above function
@@ -329,10 +333,10 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
 
     return raster, (light_vectors, light_vector_norms_sqr), (viewing_vectors, viewing_norms)
 
-def raster_from_directions(light_dirs, albedo, world_normals):
+def raster_from_directions(light_dirs, albedo, world_normals, return_shading=False):
     shading = compute_clipped_dot_prod(light_dirs, world_normals)
     raster = shade_albedo(albedo, shading)
-    return raster
+    return (raster, shading) if return_shading else raster
 
 def get_occupancy(depth_image):
     """Get the occupancy of the image sample i.e., there where there is finite depth and therefore a surface.

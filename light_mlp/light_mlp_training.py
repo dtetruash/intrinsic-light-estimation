@@ -14,7 +14,6 @@
 
 # +
 import torch
-import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
@@ -48,13 +47,24 @@ def get_dataloader(batch_size, split='train'):
                                          pin_memory=True, num_workers=0)
     return loader
 
+def get_optimizer(optimizer, model, learning_rate):
+    if optimizer == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    elif optimizer == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+
+    return optimizer
+
+def get_model(num_feats, num_layers, layer_size, dropout):
+    hidden_channels = [layer_size] * num_layers
+    hidden_channels[-1] = hidden_channels[-1] // 2
+    return LightMLP(num_feats, hidden_channels, dropout=dropout)
 
 def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
     "Compute performance of the model on the validation dataset and log a wandb.Table"
     model.eval()
     val_loss = 0.
     with torch.inference_mode():
-        correct = 0
         for step, (feats, target_vector) in tqdm(enumerate(valid_dl),
                                                  desc="Validating model",
                                                  total=len(valid_dl)):
@@ -64,8 +74,6 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
             inputs = torch.flatten(feats, start_dim=1)
             outputs = model(inputs)  # should be (batch_len, 3)
             val_loss += loss_func(outputs, target_vector)*target_vector.size(0)
-
-            break
 
     return val_loss / len(valid_dl.dataset)
 
@@ -137,7 +145,7 @@ def generate_validation_image(model, valid_dataset):
         return image_array, image_caption
 
 
-def train_epoch(epoch, train_dl, model, loss_func):
+def train_epoch(epoch, train_dl, model, loss_func, optimizer, n_steps_per_epoch):
     cumu_loss = 0.0
     for step, (feats, target_vector) in tqdm(enumerate(train_dl),
                                              total=len(train_dl),
@@ -166,15 +174,13 @@ def train_epoch(epoch, train_dl, model, loss_func):
             # 🐝 Log train metrics to wandb
             wandb.log(metrics)
 
-        break
-
     return cumu_loss / len(train_dl)
 
 
 # Loss functions!
 
 cosine = nn.CosineSimilarity(dim=1, eps=1e-6)
-def cosine_similarity_loss_func(x, y, lamb=2.0):
+def cosine_similarity_loss(x, y, lamb=2.0):
     cosine_similarity = cosine(x, y)
     similarity_target = torch.tensor([1.0]).broadcast_to(cosine_similarity.size()).to(device)
     similarity_term = F.mse_loss(cosine_similarity, similarity_target)
@@ -188,116 +194,154 @@ def unitarity_loss(x):
 
     return unitarity_term
 
+def get_loss_func(loss_func, unitarity_lambda):
+    if loss_func == 'cosine':
+        return lambda x, y: cosine_similarity_loss(x, y) + unitarity_lambda * unitarity_loss(x)
+    elif loss_func == 'mse':
+        return lambda x, y: F.mse_loss(x, y) + unitarity_lambda * unitarity_loss(x)
 
-def loss_func(x, y, lamb=2.0):
-    return cosine_similarity_loss_func(x, y) + lamb * unitarity_loss(x)
+
+# Main training function
+def carry_out_training():
+
+    with wandb.init() as current_run:
+
+        # Copy your config
+        config = current_run.config
+
+        print(f"config object was: {list(config.items())}")
+
+        train_dl = get_dataloader(batch_size=config.batch_size)
+        print("Loaded train dataset.")
+
+        valid_dl = get_dataloader(batch_size=2*config.batch_size, split='val')
+        print("Loaded validation dataset.")
+
+        # make output dirs
+        if not os.path.exists(config.model_checkpoint_path):
+            os.makedirs(config.model_checkpoint_path)
+
+        if not os.path.exists(config.model_trained_path):
+            os.makedirs(config.model_trained_path)
+
+        # -
+        n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
+
+        # Construct model, optimizer, and loss
+        # model = LightMLP(config.num_feats, config.hidden_channels, dropout=config.dropout)
+        model = get_model(config.num_feats, config.num_layers, config.layer_size, config.dropout)
+        optimizer = get_optimizer(config.optimizer, model, config.learning_rate)
+        loss_func = get_loss_func(config.loss_func, config.unitarity_lambda)
+
+        print("Model was:", model)
+
+        # +
+        # Training
+        for epoch in tqdm(range(config.epochs) + 1,
+                          desc="Epoch",
+                          total=config.epochs,
+                          position=0, leave=True, colour='green'):
+            model.train()
+
+            # Train an epoch
+            print(f"Training epoch {epoch}")
+            avg_train_loss = train_epoch(epoch, train_dl, model, loss_func, optimizer, n_steps_per_epoch)
+            wandb.log({"train/avg_loss": avg_train_loss})
+
+            # Validation
+            print(f"Validating model after epoch {epoch}")
+            val_loss = validate_model(model, valid_dl, loss_func)
+            print("Done validating.")
+
+            # Render a validation image
+            print("Creating validation image.")
+            val_image_array, image_caption = generate_validation_image(model, valid_dl.dataset)
+            val_image = wandb.Image(val_image_array, caption=image_caption)
+
+            # 🐝 Log train and validation metrics to wandb
+            val_metrics = {"val/val_loss": val_loss,
+                           "val/images": val_image}
+            wandb.log(val_metrics)
+
+            print(f"Train Loss: {avg_train_loss:.3f} Valid Loss: {val_loss:3f}")
+
+            to_save = {
+                'model_state_dict': model.state_dict(),
+                'optimized_state_dict': optimizer.state_dict(),
+                'epoch': epoch,
+                'learning_rate': config.learning_rate,
+                "dropout": config.dropout,
+                "num_feats": config.num_feats,
+                "num_layers": config.num_layers,
+                "layer_size": config.layer_size,
+            }
+
+            # save the model and upload it to wandb
+            if epoch + 1 == config.epochs:
+                # save trained model
+                trained_file = f"{config.model_trained_path}/{current_run.project}_{current_run.name}.pth"
+                torch.save(to_save, trained_file)
+                wandb.save(trained_file, policy='now')
+            else:
+                # save checkpoint
+                check_point_file = f"{config.model_checkpoint_path}/{current_run.project}_{current_run.name}_ckpt.pth"
+                torch.save(to_save, check_point_file)
+                wandb.save(check_point_file, policy='live')
 
 
-# +
-# Get the data
-batch_size = 1024
-train_dl = get_dataloader(batch_size=batch_size)
-print("Loaded train dataset.")
+if __name__ == "__main__":
 
-valid_dl = get_dataloader(batch_size=2*batch_size, split='val')
-print("Loaded validation dataset.")
+    project_name = "light-mlp-supervised-cosine"
 
-# +
-# 🐝 initialise a wandb run
-# NOTE: The model checkpoint path should be to scratch on the cluster
+    raster_config = rr.parse_config()
 
-raster_config = rr.parse_config()
+    sweep_configuration = {
+        'method': 'random',
+        'metric': {
+            'name': 'validation_loss',
+            'goal': 'minimize',
+        },
+        'parameters': {
+            'batch_size': {
+                'distribution': 'q_log_uniform_values',
+                'q': 8,
+                'min': 32,
+                'max': 256,
+            },
+            'learning_rate': {
+                'min': 0.0001,
+                'max': 0.1,
+            },
+            'loss_func': {'values': ['cosine', 'mse']},
+            'unitarity_lambda': {
 
-current_run = wandb.init(
-    project="light-mlp-supervised-cosine",
-    config={
-        "epochs": 5,
-        "batch_size": batch_size,
-        "lr": 1e-3,
-        "dropout": 0.0,  # random.uniform(0.01, 0.80),
-        "num_feats": 3,
-        "hidden_channels": [256]*4 + [128],
-        "model_checkpoint_path": 'model_checkpoints',
-        'model_trained_path': 'model_trained',
-        'scene': raster_config['paths']['scene']
+                'min': 0.0,
+                'max': 2.0,
+            },
+            'optimizer': {'values': ['adam', 'sgd']},
+        },
+    }
+
+    # model parameters
+    sweep_configuration['parameters'].update({
+        'num_feats': {'value': 3},
+        'num_layers': {
+            'values': [3, 6, 10],
+        },
+        'layer_size': {'values': [128, 256, 512]},
+        'dropout': {'values': [0.15, 0.2, 0.25, 0.3, 0.4]},
     })
 
-# Copy your config
-config = wandb.config
+    # non-sweep parameters
+    sweep_configuration['parameters'].update({
+        'epochs': {'value': 20},
+        'model_checkpoint_path': {'value': 'model_checkpoints'},
+        'model_trained_path': {'value': 'model_trained'},
+        'scene': {'value': raster_config['paths']['scene']}
+    })
 
-# make output dirs
-if not os.path.exists(config.model_checkpoint_path):
-    os.makedirs(config.model_checkpoint_path)
+    wandb.login()
 
-if not os.path.exists(config.model_trained_path):
-    os.makedirs(config.model_trained_path)
+    sweep_id = wandb.sweep(sweep=sweep_configuration, project=project_name)
 
-n_steps_per_epoch = math.ceil(len(train_dl.dataset) / config.batch_size)
-# -
-
-# MLP model
-model = LightMLP(config.num_feats, config.hidden_channels, dropout=config.dropout)
-
-optimizer = torch.optim.Adam(model.parameters(), lr=config.lr)
-
-# +
-# Training
-for epoch in tqdm(range(config.epochs),
-                  desc="Epoch",
-                  total=config.epochs,
-                  position=0, leave=True, colour='green'):
-    model.train()
-
-    # Train an epoch
-    print(f"Training epoch {epoch}")
-    avg_train_loss = train_epoch(epoch, train_dl, model, cosine_similarity_loss_func)
-    wandb.log({"train/avg_loss": avg_train_loss})
-
-    # Validation
-    print(f"Validating model after epoch {epoch}")
-    val_loss = validate_model(model, valid_dl, cosine_similarity_loss_func)
-    print("Done validating.")
-
-    # Render a validation image
-    print("Creating validation image.")
-    val_image_array, image_caption = generate_validation_image(model, valid_dl.dataset)
-    # val_image = PILImage.fromarray(val_image_array, mode="RGB")
-    # print(f"image type {type(val_image)}")
-    # val_image.save(f"validation_image_{epoch:03}.png")
-
-    val_image = wandb.Image(val_image_array, caption=image_caption)
-    # 🐝 Log train and validation metrics to wandb
-    val_metrics = {"val/val_loss": val_loss,
-                   "val/images": val_image}
-    wandb.log(val_metrics)
-
-    print(f"Train Loss: {avg_train_loss:.3f} Valid Loss: {val_loss:3f}")
-
-    to_save = {
-        'model_state_dict': model.state_dict(),
-        'optimized_state_dict': optimizer.state_dict(),
-        'epoch': epoch,
-        'lr': config.lr,
-        "dropout": config.dropout,
-        "num_feats": config.num_feats,
-        "hidden_channels": config.hidden_channels,
-
-    }
-    # save the model and upload it to wandb
-    if epoch + 1 == config.epochs:
-        # save trained model
-        trained_file = f"{config.model_trained_path}/{current_run.project}_{current_run.name}.pth"
-        torch.save(to_save, trained_file)
-        wandb.save(trained_file, policy='now')
-    else:
-        # save checkpoint
-        check_point_file = f"{config.model_checkpoint_path}/{current_run.project}_{current_run.name}_ckpt.pth"
-        torch.save(to_save, check_point_file)
-        wandb.save(check_point_file, policy='live')
-
-
-# 🐝 Close your wandb run
-wandb.finish()
-# -
-
-model
+    wandb.agent(sweep_id, function=carry_out_training, count=20)
