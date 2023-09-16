@@ -13,18 +13,22 @@
 # ---
 
 # +
+import argparse
+import math
+import matplotlib.cm as cm
+import matplotlib.pyplot as plt
+import numpy as np
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 import wandb
-import math
+from matplotlib.colors import Normalize
 from tqdm import tqdm
-import os
-from model import LightMLP
 
 import raster_relight as rr
 import raster_dataloader as rd
+from model import LightMLP
 # -
 
 device = (
@@ -34,6 +38,22 @@ device = (
     if torch.backends.mps.is_available()
     else "cpu"
 )
+
+rng = np.random.default_rng(882723)
+
+heatmap_image_numbers = None
+heatmap_light_name = None
+
+cosine_similarity_module = nn.CosineSimilarity(dim=1, eps=1e-6)
+
+def set_heatmap_params(number_of_images, light_names):
+    global heatmap_image_numbers
+    if heatmap_image_numbers is None:
+        heatmap_image_numbers = rng.intergers(number_of_images, size=6)
+
+    global heatmap_light_name
+    if heatmap_light_name is None:
+        heatmap_light_name = light_names[rng.integers(len(light_names))]
 
 def get_current_step(epoch, batch, batch_size, batches_per_epoch):
     return batch_size * (batches_per_epoch * epoch + batch + 1)
@@ -70,7 +90,7 @@ def get_model(num_feats, num_layers, layer_size, dropout):
     hidden_channels[-1] = hidden_channels[-1] // 2
     return LightMLP(num_feats, hidden_channels, dropout=dropout)
 
-def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
+def validate_model(model, valid_dl, loss_func, loss_func_name):
     "Compute performance of the model on the validation dataset and log a wandb.Table"
     val_loss = 0.
     with torch.inference_mode():
@@ -80,9 +100,7 @@ def validate_model(model, valid_dl, loss_func, log_images=False, batch_idx=0):
             feats, target_vector = feats.to(device), target_vector.to(device)
 
             # Forward pass
-            inputs = torch.flatten(feats, start_dim=1)
-            outputs = model(inputs)  # should be (batch_len, 3)
-            val_loss += loss_func(outputs, target_vector)*target_vector.size(0)
+            val_loss += do_forward_pass(model, feats, target_vector, loss_func, loss_func_name)*target_vector.size(0)
 
     return val_loss / len(valid_dl.dataset)
 
@@ -93,10 +111,10 @@ def generate_validation_image(model, valid_dataset):
     model.eval()
     with torch.inference_mode():
         # Randomly choose which image from the validation set to reconstruct
-        image_number = np.random.randint(valid_dataset.num_frames)
+        image_number = rng.intergers(valid_dataset.num_frames)
         # randomly choose a light in the scene
         light_names = list(valid_dataset._lights_info.keys())
-        light_name = light_names[np.random.randint(valid_dataset._num_lights)]
+        light_name = light_names[rng.integers(valid_dataset._num_lights)]
         print(f"Generating OLAT validation image {image_number} with light {light_name}...")
 
         # load attributes of this validation image
@@ -143,19 +161,76 @@ def generate_validation_image(model, valid_dataset):
         gt_shading = rr.compute_clipped_dot_prod(world_normals, gt_light_vectors)
         gt_shading_image[occupancy_mask] = gt_shading[..., np.newaxis]
 
+        # TODO: add error image loss.
+        heatmap_image = np.concatenate([generate_heatmap_image(model, valid_dataset, image_number, light_name), np.ones(img_size)], axis=0)
+
         # Stick them together
         validation_images = np.concatenate([val_raster_image, val_shading_image, val_light_dir_image], axis=1)
 
         gt_images = np.concatenate([gt_raster_image, gt_shading_image, gt_light_dir_image], axis=1)
 
         image_array = np.concatenate([validation_images, gt_images], axis=0)
+        image_array = np.concatenate([image_array, heatmap_image], axis=1)
 
-        image_caption = "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading, Light directions."
+        image_caption = "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading, Light directions, Cosine Error heatmap."
 
         return image_array, image_caption
 
+def get_heatmap_color_array(data_array, cmap_name='hot', dmin=-1.0, dmax=1.0):
+    """Color the scalar data_array acording to a color map."""
+    cmap = cm.get_cmap(cmap_name)
+    norm = Normalize(vmin=dmin, vmax=dmax)
+    rgb_values = cmap(norm(data_array))[..., :-1]
+    return rgb_values
 
-def train_epoch(epoch, train_dl, model, loss_func, optimizer, n_batches_per_epoch):
+
+def generate_heatmap_image(model, valid_dataset, image_number, light_name):
+    """Create a single heatmap image via matplotlib (for now)
+    """
+    model.eval()
+    with torch.inference_mode():
+        # get light dirs for given image
+        W, H, gt_raster_pixels, world_normals, albedo, _, gt_light_vectors, occupancy_mask = valid_dataset.attributes[image_number][light_name]
+
+        feats = np.stack([world_normals, albedo, gt_raster_pixels], axis=1)
+        inputs = torch.flatten(torch.as_tensor(feats).float(), start_dim=1)
+
+        # Do inference to get light vectors
+        light_vectors = model(inputs)
+        light_vectors = light_vectors.numpy().astype(np.float32)
+
+        # compute per pixel cosine similarity
+        cosine_similarity = cosine_similarity_module(light_vectors, gt_light_vectors).float().numpy()
+
+        # colorize the similarity to get image array,
+        colorized_cosine = get_heatmap_color_array(cosine_similarity)
+
+        img_size = (W, H, 3)
+        heatmap_image = np.ones(img_size, dtype=np.float32)
+        heatmap_image[occupancy_mask] = colorized_cosine
+
+        return heatmap_image
+
+def generate_heatmap_image_grid(model, valid_dataset):
+    image_number_max = valid_dataset.num_frames
+    light_names = list(valid_dataset._lights_info.keys())
+    set_heatmap_params(image_number_max, light_names)
+
+    return np.concatenate([generate_heatmap_image(model, valid_dataset, im, heatmap_light_name) for im in heatmap_image_numbers], axis=0)
+
+def do_forward_pass(model, feats, target, loss_func, loss_func_name):
+    inputs = torch.flatten(feats, start_dim=1)  # (batch_len, )
+    outputs = model(inputs)  # should be (batch_len, 3)
+
+    if loss_func_name == 'photometric':
+        # NOTE: if the dataloader changes its output (eg, adding posiiton) this will need to change.
+        train_loss = loss_func(outputs, feats)  # for photometric this also needs some of the inputs
+    else:
+        train_loss = loss_func(outputs, target)
+
+    return train_loss
+
+def train_epoch(epoch, train_dl, model, optimizer, n_batches_per_epoch, loss_func, loss_func_name):
     cumu_loss = 0.0
     for batch, (feats, target_vector) in tqdm(enumerate(train_dl),
                                               total=len(train_dl),
@@ -164,10 +239,8 @@ def train_epoch(epoch, train_dl, model, loss_func, optimizer, n_batches_per_epoc
         # Move to device
         feats, target_vector = feats.to(device), target_vector.to(device)
 
-        # Forward pass
-        inputs = torch.flatten(feats, start_dim=1)  # (batch_len, )
-        outputs = model(inputs)  # should be (batch_len, 3)
-        train_loss = loss_func(outputs, target_vector)
+        # forward pass
+        train_loss = do_forward_pass(model, feats, target_vector, loss_func, loss_func_name)
         cumu_loss += train_loss.item()
 
         # Optimization step
@@ -188,12 +261,15 @@ def train_epoch(epoch, train_dl, model, loss_func, optimizer, n_batches_per_epoc
 
     return cumu_loss / len(train_dl)
 
+def decompose_feats(feats):
+    # assuming that we have (B, F, 3) with normals, albedo, then normals
+    return feats[:, 0], feats[:, 1], feats[:, 2]
 
 # Loss functions!
 
-cosine = nn.CosineSimilarity(dim=1, eps=1e-6)
+
 def cosine_similarity_loss(x, y, lamb=2.0):
-    cosine_similarity = cosine(x, y)
+    cosine_similarity = cosine_similarity_module(x, y)
     similarity_target = torch.tensor([1.0]).broadcast_to(cosine_similarity.size()).to(device)
     similarity_term = F.mse_loss(cosine_similarity, similarity_target)
 
@@ -206,12 +282,27 @@ def unitarity_loss(x):
 
     return unitarity_term
 
+def photometric_loss(x, feats):
+    # decompose feats to albedo, normals, and images
+    normals, albedo, images = decompose_feats(feats)
+
+    # TODO: later, will need to do sampling here
+    pred_light_vectors = x
+    pred_images = rr.raster_from_directions_torch(pred_light_vectors, albedo, normals)
+
+    return F.mse_loss(images, pred_images)
+
+
 def get_loss_func(loss_func, unitarity_lambda):
+    print(f"Loss func name was: {loss_func}.")
     if loss_func == 'cosine':
         return lambda x, y: cosine_similarity_loss(x, y) + unitarity_lambda * unitarity_loss(x)
     elif loss_func == 'mse':
         return lambda x, y: F.mse_loss(x, y) + unitarity_lambda * unitarity_loss(x)
-
+    elif loss_func == 'photometric':
+        return lambda x, y: photometric_loss(x, y)
+    else:
+        raise ValueError(f"Not suported loss function type '{loss_func}'.")
 
 # Main training function
 def carry_out_training():
@@ -257,13 +348,13 @@ def carry_out_training():
 
             # Train an epoch
             print(f"Training epoch {epoch}")
-            avg_train_loss = train_epoch(epoch, train_dl, model, loss_func, optimizer, n_steps_per_epoch)
+            avg_train_loss = train_epoch(epoch, train_dl, model, optimizer, n_steps_per_epoch, loss_func, config.loss_func)
             wandb.log({"train/avg_loss": avg_train_loss})
 
             # Validation
             model.eval()
             print(f"Validating model after epoch {epoch}")
-            val_loss = validate_model(model, valid_dl, loss_func)
+            val_loss = validate_model(model, valid_dl, loss_func, config.loss_func)
             print("Done validating.")
 
             # Render a validation image
@@ -271,10 +362,13 @@ def carry_out_training():
             val_image_array, image_caption = generate_validation_image(model, valid_dl.dataset)
             val_image = wandb.Image(val_image_array, caption=image_caption)
 
+            # TODO: create error heatmaps
+            error_heatmap_image, heatmap_caption = generate_heatmap_image_grid(model, valid_dl.dataset)
+
             # 🐝 Log train and validation metrics to wandb
             val_metrics = {"validation_loss": val_loss,
                            "val/images": val_image}
-            wandb.log(val_metrics)
+            wandb.log(val_metrics, step=epoch)
 
             print(f"Train Loss: {avg_train_loss:.3f} Valid Loss: {val_loss:3f}")
 
@@ -305,7 +399,11 @@ def carry_out_training():
 
 if __name__ == "__main__":
 
-    project_name = "light-mlp-supervised-sweep"
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode.')
+    args = parser.parse_args()
+
+    project_name = "light-mlp-selfsupervised-sweep"
 
     raster_config = rr.parse_config()
 
@@ -326,7 +424,7 @@ if __name__ == "__main__":
                 'min': 0.0001,
                 'max': 0.1,
             },
-            'loss_func': {'values': ['cosine', 'mse']},
+            'loss_func': {'value': 'photometric'},
             'unitarity_lambda': {
 
                 'min': 0.0,
@@ -342,8 +440,12 @@ if __name__ == "__main__":
         'num_layers': {
             'values': [3, 6, 10],
         },
-        'layer_size': {'values': [128, 256, 512]},
-        'dropout': {'values': [0.15, 0.2, 0.25, 0.3, 0.4]},
+        'layer_size': {
+            'values': [64, 128, 256, 512]
+        },
+        'dropout': {
+            'values': [0.15, 0.2, 0.25, 0.3, 0.4]
+        },
     })
 
     # non-sweep parameters
@@ -355,8 +457,11 @@ if __name__ == "__main__":
         'scene': {'value': raster_config['paths']['scene']}
     })
 
+    if args.debug:
+        pass
+
     wandb.login()
 
     sweep_id = wandb.sweep(sweep=sweep_configuration, project=project_name)
 
-    wandb.agent(sweep_id, function=carry_out_training, count=15)
+    wandb.agent(sweep_id, function=carry_out_training, count=10)

@@ -5,6 +5,7 @@ import cv2
 import json
 import open3d as o3d
 import configparser
+import torch
 
 from PIL import Image
 from matplotlib import pyplot as plt
@@ -216,12 +217,12 @@ def check_rotation(R):
     # Check the rotation matrix
     det_R = np.linalg.det(R)
     logging.info(f"det(R) = {det_R}")
-    assert np.abs(det_R - 1.0) < 1e-5
+    assert np.abs(det_R - 1.0) < 1e-5, f"Rotation check failed. Expected rotation matrix determinant to be 1, and was {det_R}."
 
     Rt_R = R.T @ R
     logging.info("R^T @ R = ")
     logging.info(Rt_R)
-    assert np.all(np.abs(Rt_R - np.eye(3)) < 1e-5)
+    assert np.all(np.abs(Rt_R - np.eye(3)) < 1e-5), "Rotation check failed. Rotation matrix was not orthonormal."
 
 def get_camera_space_normals(camera_normal_pixels, shift=np.array([-0.5]*3), scale=np.array([2.0]*3)):
     """
@@ -287,17 +288,31 @@ def compute_viewing_vectors(posed_points, camera_center):
     return viewing_vectors / viewing_norms[..., np.newaxis], viewing_norms
 
 def compute_clipped_dot_prod(vecs_1, vecs_2):
-    assert vecs_1.shape == vecs_2.shape
+    assert vecs_1.shape == vecs_2.shape, f"Clipped dot prod.: Invalid inputs do not have identical shapes. Were {vecs_1.shape} and {vecs_2.shape}"
     # Compute max(n dot l,0) i.e., shading
     dot = np.sum(vecs_2.reshape((-1, 3)) * vecs_1.reshape((-1, 3)), axis=-1)
 
     return np.maximum(dot, 0)
+
+def compute_clipped_dot_prod_torch(vecs_1, vecs_2):
+    assert vecs_1.shape == vecs_2.shape, f"Clipped dot prod.: Invalid inputs do not have identical shapes. Were {vecs_1.shape} and {vecs_2.shape}"
+    # Compute max(n dot l,0) i.e., shading
+    dot = torch.sum(vecs_2.reshape((-1, 3)) * vecs_1.reshape((-1, 3)), dim=-1)
+
+    return torch.maximum(dot, torch.tensor([0.0])).float()
 
 def shade_albedo(albedo, shading):
     # Compute reaster image
     image = np.empty_like(albedo)
     np.multiply(albedo, shading[:, np.newaxis], image)
     return image
+
+def shade_albedo_torch(albedo, shading):
+    # Compute reaster image
+    image = torch.multiply(albedo, shading[:, np.newaxis])
+    assert image.shape == albedo.shape, f"Shade albedo failed. Image and albedo shape mismatch. Were {albedo.shape} and {image.shape}."
+    return image.float()
+
 
 def compute_raster(world_normals, albedo, posed_points, light_location, camera_center, light_power=50, apply_viewing_cosine=False):
     """
@@ -311,7 +326,7 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
     """
 
     # shapes
-    assert world_normals.shape == albedo.shape
+    assert world_normals.shape == albedo.shape, f"Compute raster failed. World normals and albedo shape mismatch. Were {world_normals.shape} and {albedo.shape}."
 
     logging.debug(f"in compute_raster: posed_points - {posed_points.shape}, light_location: {light_location.shape}")
     # #### Get Light Distances for First Light
@@ -336,6 +351,11 @@ def compute_raster(world_normals, albedo, posed_points, light_location, camera_c
 def raster_from_directions(light_dirs, albedo, world_normals, return_shading=False):
     shading = compute_clipped_dot_prod(light_dirs, world_normals)
     raster = shade_albedo(albedo, shading)
+    return (raster, shading) if return_shading else raster
+
+def raster_from_directions_torch(light_dirs, albedo, world_normals, return_shading=False):
+    shading = compute_clipped_dot_prod_torch(light_dirs, world_normals)
+    raster = shade_albedo_torch(albedo, shading)
     return (raster, shading) if return_shading else raster
 
 def get_occupancy(depth_image):

@@ -10,5 +10,5 @@ class LightMLP(torchvision.ops.MLP):
     def forward(self, x):
         x = super().forward(x)
         x = F.normalize(x)
-        assert x.shape[-1] == 3
+        assert x.shape[-1] == 3, f"Model inputs' last dimention was not 3, was {x.shape[-1]}."
         return x
