@@ -12,3 +12,7 @@ class LightMLP(torchvision.ops.MLP):
         x = F.normalize(x)
         assert x.shape[-1] == 3, f"Model inputs' last dimention was not 3, was {x.shape[-1]}."
         return x
+
+# TODO: Impelemenet model which predicts SH coeficients
+class LightSH(torchvision.ops.MLP):
+    pass

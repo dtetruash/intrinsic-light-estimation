@@ -16,7 +16,6 @@
 import argparse
 import math
 import matplotlib.cm as cm
-import matplotlib.pyplot as plt
 import numpy as np
 import os
 import torch
@@ -86,23 +85,27 @@ def get_optimizer(optimizer, model, learning_rate):
     return optimizer
 
 def get_model(num_feats, num_layers, layer_size, dropout):
+    # TODO: Add flag to see which model to create, mlp or sh
     hidden_channels = [layer_size] * num_layers
     hidden_channels[-1] = hidden_channels[-1] // 2
     return LightMLP(num_feats, hidden_channels, dropout=dropout)
 
 def validate_model(model, valid_dl, loss_func, loss_func_name):
     "Compute performance of the model on the validation dataset and log a wandb.Table"
-    val_loss = 0.
+    val_loss_acc = 0.
     with torch.inference_mode():
         for step, (feats, target_vector) in tqdm(enumerate(valid_dl),
                                                  desc="Validating model",
                                                  total=len(valid_dl)):
             feats, target_vector = feats.to(device), target_vector.to(device)
+            samples_in_batch = target_vector.size(0)
 
             # Forward pass
-            val_loss += do_forward_pass(model, feats, target_vector, loss_func, loss_func_name)*target_vector.size(0)
+            val_loss = do_forward_pass(model, feats, target_vector, loss_func, loss_func_name).item()
 
-    return val_loss / len(valid_dl.dataset)
+            val_loss_acc += val_loss * samples_in_batch
+
+    return val_loss_acc / len(valid_dl.dataset)
 
 
 def generate_validation_image(model, valid_dataset):
@@ -235,31 +238,33 @@ def train_epoch(epoch, train_dl, model, optimizer, n_batches_per_epoch, loss_fun
     for batch, (feats, target_vector) in tqdm(enumerate(train_dl),
                                               total=len(train_dl),
                                               desc="Batch",
-                                              position=1, leave=False, colour='red'):
+                                              position=1, leave=True, colour='red'):
         # Move to device
         feats, target_vector = feats.to(device), target_vector.to(device)
 
         # forward pass
-        train_loss = do_forward_pass(model, feats, target_vector, loss_func, loss_func_name)
-        cumu_loss += train_loss.item()
+        batch_train_loss = do_forward_pass(model, feats, target_vector, loss_func, loss_func_name)
+        cumu_loss += batch_train_loss.item()
 
         # Optimization step
         optimizer.zero_grad()
-        train_loss.backward()
+        batch_train_loss.backward()
         optimizer.step()
 
         # Collect metrics
-        metrics = {"train/train_loss": train_loss,
-                   "train/epoch": (batch + 1 + (n_batches_per_epoch * epoch)) / n_batches_per_epoch,
+        epoch_step = (batch + 1 + (n_batches_per_epoch * epoch)) / n_batches_per_epoch,
+        metrics = {"train/train_loss": batch_train_loss,
+                   "train/epoch": epoch_step,
                    }
 
         # step = get_current_step(epoch, batch, train_dl.batch_size, n_batches_per_epoch)
 
         if batch + 1 < n_batches_per_epoch:
             # 🐝 Log train metrics to wandb
-            wandb.log(metrics)
+            wandb.log(metrics, step=epoch_step)
 
-    return cumu_loss / len(train_dl)
+    avg_batch_loss = cumu_loss / len(train_dl)
+    return avg_batch_loss
 
 def decompose_feats(feats):
     # assuming that we have (B, F, 3) with normals, albedo, then normals
@@ -283,10 +288,15 @@ def unitarity_loss(x):
     return unitarity_term
 
 def photometric_loss(x, feats):
+    """Take in a rendered pixel image from model parameters and generate the loss between it and a ranster renderer of that pixel.
+    """
+    # NOTE: This function will need to change
+    # The comparison method, as well as the rendering method.
+    # E.g., when computing the loss against diffuse combined render, we would not need to recompute the target image pixel.
+
     # decompose feats to albedo, normals, and images
     normals, albedo, images = decompose_feats(feats)
 
-    # TODO: later, will need to do sampling here
     pred_light_vectors = x
     pred_images = rr.raster_from_directions_torch(pred_light_vectors, albedo, normals)
 
