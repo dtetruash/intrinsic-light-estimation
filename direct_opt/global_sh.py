@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import wandb
 from data_loaders import raster_relight as rr
 from data_loaders.get_dataloader import get_dataloader
-from data_loaders.raster_dataset import RasterDataset
+from data_loaders.datasets import RasterDataset
 from ile_utils.get_device import get_device
 from ile_utils.config import Config
 from rich.traceback import install as install_rich
