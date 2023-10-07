@@ -1,0 +1,21 @@
+program: train.py
+method: random
+metric:
+  name: validation_loss
+  goal: minimize
+parameters:
+  learning_rate:
+    min: 0.0001
+    max: 0.1
+  num_layers:
+    values: []
+  layer_size:
+    vlaues: [128, 256, 512]
+  loss_func:
+    values: ["cosine", "mse"]
+  optimizer:
+    values: ["adam", "sgd"]
+  dropout:
+    values: [0.15, 0.2, 0.25, 0.3, 0.4]
+  epochs:
+    value: 20

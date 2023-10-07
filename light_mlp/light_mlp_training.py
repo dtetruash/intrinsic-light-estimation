@@ -320,12 +320,12 @@ def carry_out_training():
             # save the model and upload it to wandb
             if epoch + 1 == config.epochs:
                 # save trained model
-                trained_file = f"{config.model_trained_path}/{current_run.project}_{current_run.name}.pth"
+                trained_file = f"{config.model_trained_path}/{current_run.project}_{current_run.name}.pth"  # noqa: E501
                 torch.save(to_save, trained_file)
                 wandb.save(trained_file, policy="now")
             else:
                 # save checkpoint
-                check_point_file = f"{config.model_checkpoint_path}/{current_run.project}_{current_run.name}_ckpt.pth"
+                check_point_file = f"{config.model_checkpoint_path}/{current_run.project}_{current_run.name}_ckpt.pth"  # noqa: E501
                 torch.save(to_save, check_point_file)
                 wandb.save(check_point_file, policy="live")
 
