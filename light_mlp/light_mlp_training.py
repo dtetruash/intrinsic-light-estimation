@@ -25,7 +25,7 @@ from model import LightMLP, LightSH
 from rich.traceback import install as install_rich
 from tqdm import tqdm
 
-from ile.data_loaders.datasets import RasterDataset
+from ile.data_loaders.datasets import OLATDataset
 from ile.losses.loss_functions import (
     cosine_similarity_loss,
     photometric_loss,
@@ -56,7 +56,7 @@ def get_dataloader(batch_size, split="train", subset_fraction=1):
 
     is_train = split == "train"
 
-    full_dataset = RasterDataset(split)
+    full_dataset = OLATDataset(split)
 
     if subset_fraction > 1:
         sub_dataset = torch.utils.data.Subset(

@@ -154,7 +154,7 @@ class IntrinsicDataset(Dataset):
             return self._len
 
 
-class RasterDataset(Dataset):
+class OLATDataset(Dataset):
     def __init__(self, split="train"):
         validate_split(config)
 
@@ -318,5 +318,5 @@ class RasterDataset(Dataset):
 
 
 if __name__ == "__main__":
-    ds = RasterDataset()
+    ds = OLATDataset()
     print(f"Loaded dataset has {len(ds)} samples.")
