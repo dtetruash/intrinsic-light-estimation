@@ -11,15 +11,16 @@ import json
 import numpy as np
 from tqdm import tqdm
 
+from configparser import NoOptionError
+
 from ile_utils.config import Config
 
 import data_loaders.raster_relight as rr
 
 config = Config.get_config()
 
-logging.basicConfig(
-    filename="raster_dataloader.log", encoding="utf-8", level=logging.INFO
-)
+logging.basicConfig(filename="datasets.log", encoding="utf-8", level=logging.INFO)
+# If you wish to log to stdin as well:
 # logging.getLogger().addHandler(logging.StreamHandler())
 
 
@@ -62,10 +63,7 @@ class IntrinsicDataset(Dataset):
     the dataset directory, placing these into the appropriate datastructures,
     and being fexible to deliver the needed by the dirived classes data.
 
-    - Load channels from config
-    - Generate OLAT if set
-        - done by other module
-    - Load split from config, or argument
+    - Load channels from config, or load all channels
     - have a __getitem__ which can change based on which things are belign loaded?
     """
 
@@ -159,6 +157,8 @@ class OLATDataset(Dataset):
         validate_split(config)
 
         # init empty containers
+        # These are used for the constuction of the overall Tensor at the end
+        # of this method
         world_normals_list = []
         aldedo_list = []
         raster_images_list = []
@@ -167,7 +167,21 @@ class OLATDataset(Dataset):
         end_indexes = []
         self._len = 0
 
+        # Is this a single OLAT dataset?
+        # NOTE: Could also do this by asking if single_olat_light is set?
+        self._is_single_OLAT = config.get("dataset", "single_olat", fallback=False)
+        if self._is_single_OLAT:
+            try:
+                self._single_OLAT_light = config.get("dataset", "single_olat_light")
+            except NoOptionError as e:
+                raise type(e)(
+                    e.message
+                    + " If the 'single_olat' dataset option is set, \
+                the specification the 'single_olat_light' option is required."
+                )
+
         # Get image transforms_file
+        # TODO: Move to a function as this is used in all datasets
         with open(config.get("paths", "transforms_file"), "r") as tf:
             image_transforms = json.loads(tf.read())
 
@@ -183,17 +197,26 @@ class OLATDataset(Dataset):
 
         self.num_frames = len(image_transforms["frames"])
 
+        # An attribute which collects dicts of tuples of tensors accosiated
+        # with each frame and light
         self.attributes = []
 
         data_path = config.get("paths", "data_path")
-        for i, frame in tqdm(
+
+        # The structure of this code block should be:
+        # for frame in set:
+        #       Load those attrs which are needed to compute OLAT
+        #           get_frame_components() -> albedo, normals, depth, posed_points
+        #       Compute the OLAT (per light or for one given light)
+        #           compute_olat_for_frame(components, light_info) -> [olat_smaples]
+        #       Record the arrts and the OLAT
+
+        for image_number, frame in tqdm(
             enumerate(image_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
             logging.info(f"Loading data from image {frame['file_path']}")
-
-            image_number = i
 
             # get all of the data attrs and load in the image cache
             (
@@ -202,26 +225,27 @@ class OLATDataset(Dataset):
                 image_albedo,
                 normal_pixels,
                 depth,
-                rgbd,
+                posed_points,
                 occupancy_mask,
-            ) = rr.load_images(image_number, downsample_ratio=downsample_ratio)
-
-            logging.debug(
-                f"Normal pixels range \
-                from {normal_pixels.min()} to {normal_pixels.max()}"
+            ) = rr.gather_intrinsic_components(
+                image_number, downsample_ratio=downsample_ratio
             )
+
+            # TODO: Call rr.compute_OLAT_pixels here
+
+            # BEGIN COMPUTING OLAT:
+
+            # STEP 1: Load the components
 
             # load image parameters
             intrinsics, c2w, R, T = rr.get_camera_parameters(
                 W, H, camera_angle_x, image_number, image_transforms
             )
 
-            self._camera_center = T
-
             # Transform notmal pixel valuse from pixel values to world normals
             logging.debug(f"Normals pixels shape: {normal_pixels.shape}")
-            camera_normals = rr.get_camera_space_normals(normal_pixels)
-            world_normals = rr.get_world_space_normals(camera_normals, R)
+            camera_normals = rr.get_camera_space_normals_from_pixels(normal_pixels)
+            world_normals = rr.to_world_space_normals(camera_normals, R)
 
             # project depth to get 3d coords
             # For now, and testing, we save the full point cloud object
@@ -229,6 +253,12 @@ class OLATDataset(Dataset):
             num_samples_per_light = posed_points.shape[0]
 
             # For reconstruction purposes
+            # Used to see where in the stream the content of each frame begins
+            # and ends. More favourable solution than the self._attributes
+            # structure.
+            # FIXME: Remove the image_attributes section, and implement a function
+            # which loads the attrs from via __get_item__ and end_idxs
+            # + the shared data like width and height.
             if len(end_indexes) == 0:
                 end_indexes.append(num_samples_per_light)
             else:
@@ -237,11 +267,18 @@ class OLATDataset(Dataset):
             # normalize albedo
             albedo = image_albedo / 255.0
 
+            # TODO: Add switch to either load a single OLAT or all of them
+            if self._is_single_OLAT:
+                # don't do for loop and don't off-set but number of lights
+                raise NotImplementedError()
+
+            # STEP 2: Compute the OLAT samples
+            # Also this collects the attribute per image for reconstructions.
             image_attributes = {}
             for light in light_locations:
                 # create raster images of pixels for the loaded image
                 light_loc = light_locations[light]
-                raster_image_pixels, (light_vectors, _), _ = rr.compute_raster(
+                raster_image_pixels, (light_vectors, _), _ = rr.compute_OLAT_pixels(
                     world_normals, albedo, posed_points, light_loc, T
                 )
                 raster_images_list += [raster_image_pixels]
@@ -267,9 +304,13 @@ class OLATDataset(Dataset):
             # save output
             added_samples = num_samples_per_light * self._num_lights
             logging.info(
-                f"Appending {num_samples_per_light} samples from image {i} per light."
+                f"Appending {num_samples_per_light} samples \
+                from image {image_number} per light."
             )
-            logging.info(f"Appending {added_samples} samples from image {i}.")
+            logging.info(
+                f"Appending {added_samples} samples \
+                from image {image_number}."
+            )
 
             # append to list, we will concat later
             world_normals_list += [world_normals] * self._num_lights
@@ -280,7 +321,8 @@ class OLATDataset(Dataset):
             self._len += added_samples
 
             logging.info(
-                f"New number of samples after loading image {i} is {self._len}"
+                f"New number of samples \
+                after loading image {image_number} is {self._len}"
             )
 
         # concat the outputs and make them tensors

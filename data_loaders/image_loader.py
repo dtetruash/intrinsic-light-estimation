@@ -17,31 +17,55 @@ config = Config.get_config()
 
 
 # Image loading functions
-def format_image_path(image_number, data_path=None, channel="", light=""):
+def format_image_path(frame_number, data_path=None, channel="", light=""):
+    """Construct the correct image path for an image in the intrinsic dataset
+    given a frame number and the channel to find the path to.
+
+    Args:
+        frame_number (int): the number of the frame
+        data_path (str or pathlike): the absolute base path to all images
+        channel (str): the name of the channel (e.g., normal, albedo, depth...)
+        light (str): the name of the light used to generate the image if any
+
+    Returns:
+        The string path to the image with given parameters.
+    """
     if data_path is None:
         data_path = config.get("paths", "data_path")
 
-    img_name = f"{data_path}/r_{image_number:03d}"
+    img_name = f"{data_path}/r_{frame_number:03d}"
     img_name += f"_{channel}" if channel else ""
     img_name += f"_{light}" if light else ""
     return img_name + ".png"
 
 
-def get_image_paths(image_number, data_path=None, channels=[], lighting=[]):
-    """Get an image along with it's given channels."""
+# FIXME: Remove the lights info from the paths, or see if they are still needed.
+# NOTE: Could also just pass the config object here instead...
+def get_image_paths(frame_number, data_path=None, channels=[], lighting=[]):
+    """Get paths to images of specified channels for a given frame.
+
+    Args:
+        frame_number (int): the number of the frame
+        data_path (str or pathlike): the absolute base path to all images
+        channels (List[str]): the names of the channels (e.g., normal, albedo, depth...)
+        lighting (List[str]): the names of lights used to generate the images if any
+
+    Returns:
+        List of string paths to the images with given parameters.
+    """
 
     # get combined (fully formed) image names
     # in combined images which are given by lighting
     image_paths = {
-        (channel := lt): format_image_path(image_number, data_path, channel)
+        (channel := lt): format_image_path(frame_number, data_path, channel)
         for lt in lighting
     }
-    image_paths["ground_truth"] = format_image_path(image_number, data_path, "")
+    image_paths["ground_truth"] = format_image_path(frame_number, data_path, "")
 
     # read in other channels beside combined
     image_paths.update(
         {
-            channel: format_image_path(image_number, data_path, channel)
+            channel: format_image_path(frame_number, data_path, channel)
             for channel in channels
         }
     )
@@ -57,13 +81,25 @@ def read_16bit(img_name):
     return rgbd
 
 
-def downsample_image(image_array, downsample_ratio=2):
-    return
+def resample_image(image_array, new_W, new_H):
+    """Resample image to new dimentions without inrerpolation."""
+    return cv2.resize(image_array, (new_W, new_H), interpolation=cv2.INTER_NEAREST)
 
 
-def load_image_channels(image_number, channels, data_path=None, downsample_ratio=1):
+def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio=1):
+    """Load the given channels of a frame as image arrays
+
+    Args:
+        frame_number (int): the number of the frame
+        channels (List[str]): the names of the channels (e.g., normal, albedo, depth...)
+        data_path (str or pathlike): the absolute base path to all images
+        downsample_ratio (int): Positive downsampling factor
+
+    Returns:
+        (image width, image height, a channel-name indexed dict of image arrays)
+    """
     image_paths = get_image_paths(
-        image_number,
+        frame_number,
         data_path,
         channels,
     )
@@ -82,7 +118,7 @@ def load_image_channels(image_number, channels, data_path=None, downsample_ratio
         except ValueError:
             print(
                 f"The necessary image channel pass '{channel}' \
-                for image '{image_number}' was not found at expeced location {path}"
+                for image '{frame_number}' was not found at expeced location {path}"
             )
             raise
 
@@ -95,10 +131,7 @@ def load_image_channels(image_number, channels, data_path=None, downsample_ratio
 
         downsampled_images = {}
         for channel, image in images.items():
-            downsampled_images[channel] = cv2.resize(
-                image, (W, H), interpolation=cv2.INTER_NEAREST
-            )
-
+            downsampled_images[channel] = resample_image(image, W, H)
         images = downsampled_images
 
     return W, H, images

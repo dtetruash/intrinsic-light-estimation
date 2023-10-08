@@ -9,6 +9,7 @@ import json
 import open3d as o3d
 import torch
 
+from configparser import NoOptionError
 
 from ile_utils.config import Config
 import data_loaders.image_loader as il
@@ -23,8 +24,17 @@ config = Config.get_config()
 
 
 # Get the transform for the given image
-def get_c2w(image_number, image_transforms):
-    return np.array(image_transforms["frames"][image_number]["transform_matrix"])
+def get_c2w(frame_number, frame_transforms):
+    """Extract camera transform for the given frame
+
+    Args:
+        frame_number (int): frame number
+        frame_transforms (dict): loaded dict of image transforms
+
+    Returns:
+        Array of the camera transform
+    """
+    return np.array(frame_transforms["frames"][frame_number]["transform_matrix"])
 
 
 # Transfomation matrix functions
@@ -36,60 +46,114 @@ def to_rotation(c2w):
     return c2w[:3, :3]
 
 
-def load_images(image_number, depth_scale=(1 / 8), depth_trunc=8.0, downsample_ratio=1):
+def remove_alpha(image_array):
+    """Strip the alpha channel from RGBA image array."""
+    # Need more robust value checking:
+    if image_array.shape[-1] == 4:
+        return image_array[..., :-1]
+    else:
+        raise ValueError(
+            f"Given image array has unexpected number of dimensions \
+        along the final axis. Was {image_array.shape[-1]} and expected 4."
+        )
+
+
+def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio=1):
+    """Gather intrinsin components of a frame needed to combine into OLAT samples.
+
+    Here, we load needed images of a frame, compute the 3d point cloud of each pixel,
+    and return them as streams of occupied pixels.
+
+    Args:
+        frame_number (int): fame to gather components for
+        depth_scale (float): inverse scale factor to scale the depth with
+            (will be divided by)
+        depth_trunc (float): maximum depth value after which depth is considered inf
+        downsample_ratio (int): positive downsampling ratio
+
+    Returns:
+        [TODO:return]
+    """
     """Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
     Return a tuple of ndarrays with flattened and occupied pixel attributes and
     information and handful of specialized formats
     Also return an rbd image for later use in projecting depth.
+
+    Return (albedo, normals, depth, image_rgbd, occupency_mask)
     """
 
-    images = il.load_image_channels(
-        image_number,
+    # Load raw image data
+    # This also determines the with/height of the images used
+    W, H, images = il.load_image_channels(
+        frame_number,
         data_path=None,
         channels=["normal", "albedo", "depth"],
         downsample_ratio=downsample_ratio,
     )
 
-    # Normal
-    image_normal = images["normal"][..., :-1]
+    # Compute Camera Parameters
+    intrinsics, c2w = get_camera_parameters(W, H, frame_number, frame_transforms)
+    R = to_rotation(c2w)
 
-    # albdo
-    image_albedo = images["albedo"][..., :-1]
-    # plt.imsave('albedo_in_relight_load.png', image_albedo)
+    # Albdo
+    albedo_image = remove_alpha(images["albedo"])
+    albedo = albedo_image / 255.0
+    logging.debug(
+        f"Albedo range \
+        from {albedo.min()} to {albedo.max()}"
+    )
+
+    # Normal
+    normal_pixels = remove_alpha(images["normal"])
+    logging.debug(
+        f"Normal pixels range \
+        from {normal_pixels.min()} to {normal_pixels.max()}"
+    )
+    camera_normals = get_camera_space_normals_from_pixels(normal_pixels)
+    world_normals = to_world_space_normals(camera_normals, R)
+
     # get only the alpha from the depth image
     depth_alpha = images["depth"][..., -1]  # This would be an array in [0,255]
-
     logging.debug(
         f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} \
         with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }"
     )
 
-    # plt.imsave('depth_alpha.png', depth_alpha, vmin=0, vmax=255, cmap='gray')
-
     # invert the depth image to be black -> white as depth increases
     depth_remapped, depth_normalization_constant = remap_depth_black2white(depth_alpha)
-
     logging.debug(
         f"Ater remapping got depth_remapped from {depth_remapped.min()} \
         to {depth_remapped.max()} with mean of {depth_remapped.mean()}. \
         The datatype is { depth_remapped.dtype }"
     )
 
-    # plt.imsave('depth_remapped.png', depth_remapped, vmin=0, vmax=255, cmap='gray')
+    # read-in parameters for RGBD image creation
+    # if only one is set, we must error, since fallbacks only work together
+    try:
+        depth_scale = config.get("parameters", "depth_scale")
+        depth_trunc = config.get("parameters", "depth_trunc")
+        logging.info(
+            f"Read-in depth_scale {depth_scale} and \
+            depth_trunc {depth_trunc} from config."
+        )
+    except NoOptionError:
+        depth_scale = 1 / 8
+        depth_trunc = 8.0
+        logging.warning(
+            f"Parameter options depth_scale and depth_trunc not set in config!\n\
+            Using defaults {depth_scale} and {depth_trunc} respectively. \
+            These might not be correct for the depth maps used, so do check."
+        )
 
     # Make RGBD image intput
     # TODO: Replace this with just the projection and no color
-    image_rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-        o3d.geometry.Image(images["albedo"][..., :-1]),
+    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        o3d.geometry.Image(albedo_image),
         o3d.geometry.Image(depth_remapped),
         depth_scale=depth_scale,
         depth_trunc=depth_trunc,
         convert_rgb_to_intensity=False,
     )
-
-    # o3d.visualization.draw_geometries(
-    # [o3d.geometry.Image(images['albedo'][..., :-1]),
-    # o3d.geometry.Image(depth_remapped)])
 
     # Normalize depth to [0,1] after the rgbd image is created
     depth_normalized = depth_remapped / depth_normalization_constant
@@ -99,6 +163,9 @@ def load_images(image_number, depth_scale=(1 / 8), depth_trunc=8.0, downsample_r
         The datatype is { depth_normalized.dtype }"
     )
 
+    # create the posed point cloud
+    posed_points = project_and_pose_3d_points_via_rgbd(rgbd, intrinsics, c2w)
+
     # get image occupancy
     occupancy_mask = get_occupancy(depth_alpha)
     logging.debug(
@@ -106,15 +173,13 @@ def load_images(image_number, depth_scale=(1 / 8), depth_trunc=8.0, downsample_r
         and with {occupancy_mask.sum()} occupied pixels."
     )
 
-    # return image data (minux alpha) for only occupied pixels for further processing
-
     return (
         W,
         H,
-        image_albedo[occupancy_mask],
-        image_normal[occupancy_mask],
+        albedo[occupancy_mask],
+        world_normals[occupancy_mask],
         depth_normalized[occupancy_mask],
-        image_rgbd,
+        posed_points,
         occupancy_mask,
     )
 
@@ -146,21 +211,35 @@ def denormalize_depth(depth_image_array, from_min=0, from_max=8):
     return (depth_from_alpha / 255.0 - 1) * -(from_max - from_min), depth_from_alpha > 0
 
 
-def get_camera_parameters(W, H, camera_angle_x, image_number, image_transforms):
-    focal = get_focal(W, camera_angle_x)
+def get_camera_parameters(W, H, frame_number, frame_transforms):
+    """Compose the intrinsic and extrinsic camera matrecies for the given frame
 
-    c2w = get_c2w(image_number, image_transforms)
-    T = to_translation(c2w)
-    R = to_rotation(c2w)
+    Args:
+        W (int): width of the frame
+        H (int): height of the frame
+        frame_number (int): index of the frame
+        frame_transforms (dict): dictionar of frame parameters from intrinsic database
+
+    Returns:
+        o3d.camera.PinholeCameraIntrinsic, and ndarray of camera extrinsics
+    """
+    c2w = get_c2w(frame_number, frame_transforms)
+
+    # Check that the rotation matrix is valid
+    check_rotation(to_rotation(c2w))
 
     # Set intrinsic matrix
+    camera_angle_x = frame_transforms["camera_angle_x"]
+    focal = get_focal(W, camera_angle_x)
     f_x = f_y = focal
     intrinsics = o3d.camera.PinholeCameraIntrinsic(W, H, f_x, f_y, W / 2.0, H / 2.0)
 
-    return intrinsics, c2w, R, T
+    return intrinsics, c2w
 
 
-def project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w, return_array=True):
+def project_and_pose_3d_points_via_rgbd(
+    image_rgbd, camara_intrinsics, c2w, return_array=True
+):
     """Projct image point via depth and camera parameters
     image_rgbd: open3d RGBD image to porject
     intrinsics: open3d intrinsics matrix object
@@ -171,7 +250,7 @@ def project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w, return_arra
     # TODO: Replace this with a function
     # which just does the projection without the color
     pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
-        image_rgbd, o3d.camera.PinholeCameraIntrinsic(intrinsics)
+        image_rgbd, o3d.camera.PinholeCameraIntrinsic(camara_intrinsics)
     )
 
     # Flip it, otherwise the pointcloud will be upside down
@@ -203,7 +282,7 @@ def check_rotation(R):
     ), "Rotation check failed. Rotation matrix was not orthonormal."
 
 
-def get_camera_space_normals(
+def get_camera_space_normals_from_pixels(
     camera_normal_pixels, shift=np.array([-0.5] * 3), scale=np.array([2.0] * 3)
 ):
     """
@@ -237,7 +316,7 @@ def get_camera_space_normals(
     return camera_normals_normalized
 
 
-def get_world_space_normals(camera_normals, R):
+def to_world_space_normals(camera_normals, R):
     """
     camera_normals : ndarray (N,3) normalized normal vectors in camera-space
     Transform camera-space normals in inhomogeneous coordinates
@@ -321,24 +400,23 @@ def shade_albedo_torch(albedo, shading):
     return image.float()
 
 
-def compute_raster(
+def compute_OLAT_pixels(
     world_normals,
     albedo,
     posed_points,
     light_location,
-    camera_center,
-    light_power=50,
-    apply_viewing_cosine=False,
 ):
-    """
-    Compute the raster rendering of a collection of posed points with some albedo lit
-    by a pointlight at a know direction.
+    """Compute the OLAT rendering of a collection of posed points with some albedo lit
+    by a pointlight at a known location.
 
-    world_normals : ndarray of per-pixel normals (N, 3) in range [-1,1]^3
-    albedo        : ndattay of per-pixels albedo (N, 3) in range [0,1]^3
-    occupied_mask : ndarray of per-pixel occupancy (N,) binary
-    posed_points  : ndarray of per-pixel projected 3d locations (N, 3)
-    light_location: ndarray of the location of the light to render with (3,)
+    Args:
+        world_normals : ndarray of per-pixel normals (N, 3) in range [-1,1]^3
+        albedo        : ndattay of per-pixels albedo (N, 3) in range [0,1]^3
+        posed_points  : ndarray of per-pixel projected 3d locations (N, 3)
+        light_location: ndarray of the location of the light to render with (3,)
+
+    Returns:
+        return OLAT rendred pixels, tuple of light vectors and their square norms
     """
 
     # shapes
@@ -356,17 +434,10 @@ def compute_raster(
     light_vectors, light_vector_norms_sqr = compute_light_vectors(
         posed_points, light_location
     )
-    viewing_vectors, viewing_norms = compute_viewing_vectors(
-        posed_points, camera_center
-    )
 
     shading = compute_clipped_dot_prod(light_vectors, world_normals)
-    viewing_foreshortening = compute_clipped_dot_prod(viewing_vectors, world_normals)
 
     raster = shade_albedo(albedo, shading)
-
-    if apply_viewing_cosine:
-        raster *= viewing_foreshortening[..., np.newaxis]
 
     logging.debug(
         f"in raster: albedo type is {albedo.dtype} and range \
@@ -384,7 +455,6 @@ def compute_raster(
     return (
         raster,
         (light_vectors, light_vector_norms_sqr),
-        (viewing_vectors, viewing_norms),
     )
 
 
@@ -421,13 +491,19 @@ def get_occupancy(depth_image):
     return depth_alpha > 0.0
 
 
-def create_OLAT_samples_for_frame(flatten=False):
+def reconstruct_image(W, H, pixels, occupancy):
+    image_container = np.ones((W, H, 3))
+    image_container[occupancy] = pixels
+    return image_container
+
+
+def create_OLAT_samples_for_frame():
     """Renders raster images given the config for one image frame"""
     # Load Transforms
     with open(config.get("paths", "transforms_file"), "r") as tf:
-        image_transforms = json.loads(tf.read())
+        frame_transforms = json.loads(tf.read())
 
-    image_number = int(config.get("images", "image_number"))
+    frame_number = int(config.get("images", "image_number"))
 
     downsample_ratio = int(config.get("parameters", "downsample_ratio"))
 
@@ -435,19 +511,20 @@ def create_OLAT_samples_for_frame(flatten=False):
     (
         W,
         H,
-        image_albedo,
-        image_normal,
+        albedo,
+        normals,
         depth_remapped,
-        image_rgbd,
+        posed_points,
         occupency_mask,
-    ) = load_images(image_number, downsample_ratio=downsample_ratio)
+    ) = gather_intrinsic_components(
+        frame_number, frame_transforms, downsample_ratio=downsample_ratio
+    )
     logging.info(f"Loaded images of size ({W},{H}).")
 
     # Loading Lights and Light Transforms
     lights_file_path = config.get("paths", "lights_file")
     with open(lights_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
-
     logging.info(
         f"Loaded {lights_file_path}. \
         Number of lights is {len(lights_info['lights'])}"
@@ -462,64 +539,22 @@ def create_OLAT_samples_for_frame(flatten=False):
         for (name, transform) in light_transforms.items()
     }
 
-    # Compute Camera Parameters
-    intrinsics, c2w, R, T = get_camera_parameters(
-        W, H, image_transforms["camera_angle_x"], image_number, image_transforms
-    )
-    check_rotation(R)
-
-    logging.info("Using the following intrinsics matrix:")
-    logging.info("K = ")
-    logging.info(intrinsics.intrinsic_matrix)
-
-    # ## Creating Point Cloud
-    logging.info(
-        f"There are {occupency_mask.sum()} points with finite depth in the image."
-    )
-
-    # ### Using Open3D RGBD + Point Cloud
-    posed_points = project_and_pose_3d_points_via_rgbd(image_rgbd, intrinsics, c2w)
-    logging.debug(
-        f"After posing, we have posed_points of shape {posed_points.shape} \
-        and size {posed_points.size}"
-    )
-
-    # Raster Rendering
-
-    # Get Normals
-    camera_normals = get_camera_space_normals(image_normal)
-    world_normals = get_world_space_normals(camera_normals, R)
-
-    # do this for the given light orientations, populate dict for output
-    # output_rasters = {}
-    # for light_name, light_location in light_locations.items():
-    #     raster_image = compute_raster(world_normals, albedo, occupied_mask,
-    #         posed_points, light_location)
-    #     output_rasters.update(light_name, raster_image)
-
-    # Normalize Albedo to [0.1]
-    albedo = image_albedo / 255.0
-    logging.debug(
-        f"in outter: albedo is {albedo.dtype} \
-        in range [{albedo.min()}, { albedo.max() }]"
-    )
-    output_rasters = [
+    output_OLATs = [
         [
             light_name,
-            compute_raster(world_normals, albedo, posed_points, light_location, T)[0],
+            compute_OLAT_pixels(normals, albedo, posed_points, light_location)[0],
         ]
         for (light_name, light_location) in light_locations.items()
     ]
 
-    return output_rasters, occupency_mask, W, H
+    return output_OLATs, occupency_mask, W, H
 
 
 if __name__ == "__main__":
-    raster_images, occupency_mask, W, H = create_OLAT_samples_for_frame()
+    OLAT_pixel_arrays, occupency_mask, W, H = create_OLAT_samples_for_frame()
 
-    for light_name, image in raster_images:
-        logging.debug(f"{light_name}: {image.min()}, {image.mean()}, {image.max()}")
+    for light_name, pixels in OLAT_pixel_arrays:
+        logging.debug(f"{light_name}: {pixels.min()}, {pixels.mean()}, {pixels.max()}")
         output_name = f"raster_{light_name}.png"
-        image_container = np.ones((W, H, 3))
-        image_container[occupency_mask] = image
+        image_container = reconstruct_image(W, H, pixels, occupency_mask)
         plt.imsave(output_name, image_container)
