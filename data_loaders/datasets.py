@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from configparser import NoOptionError
 
+import data_loaders.image_loader as il
 from ile_utils.config import Config
 
 import data_loaders.raster_relight as rr
@@ -57,99 +58,134 @@ def validate_split(config):
         )
 
 
-class IntrinsicDataset(Dataset):
-    """Base class for the intrinsic dataset.
-    This should have the logic of loading images from
-    the dataset directory, placing these into the appropriate datastructures,
-    and being fexible to deliver the needed by the dirived classes data.
+# TODO: Rename illumination to shading.
 
-    - Load channels from config, or load all channels
-    - have a __getitem__ which can change based on which things are belign loaded?
+
+# No OLAT needed: Should have the same base class, which just load different channels
+# Intrinsic item:       albedo, normal, combined shading, combined image
+# DiffuseIntrinsicitem: albedo, normal, combined shading, combined diffuse image
+#
+# Needs to make OLATS:
+# OLAT item:            albedo, normal, OLAT Shading, OLAT Image (for all lights)
+# Single OLAT item:     albedo, normal, OLAT Shading, OLAT Image (for one light)
+
+
+def image2stream(image, occupancy_mask):
+    """Convert image array to a flat array of just the occupied pixels
+
+    Args:
+        image (ndarray): RGBA image array
+        occupancy_mask (ndarray ): binary array of the same size as the image array
+
+    Returns:
+        A flat ndarray of just the occupied pixels in hte image array.
+    """
+    return rr.remove_alpha(image)[occupancy_mask]
+
+
+def gather_image_metadata(config):
+    """Gather the meta-data of the scene.
+
+    Args:
+        config (utils_ile.config.Config): config dict-like of the run
+
+    Returns:
+        Frame transforms dictionary, downsample ratio, number of frames to load.
+    """
+    with open(config.get("paths", "transforms_file"), "r") as tf:
+        frame_transforms = json.loads(tf.read())
+
+    downsample_ratio = int(config.get("parameters", "downsample_ratio"))
+
+    return frame_transforms, downsample_ratio
+
+
+class IntrinsicDataset(Dataset):
+    """Base class for the intrinsics dataset. It will load and deliver the passed
+    channels in the oder they are passed in.
+
+    Attributes:
+        num_frames: number of frames loaded
+        stored_chanels: channels loaded in order of their return by self.__getitem__
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config, channels):
         # Value checking and validation
         validate_split(config)
 
         # load information about the scene.
-        # 1. Scene metadata
-
         # Get image transforms_file
-        with open(config.get("paths", "transforms_file"), "r") as tf:
-            image_transforms = json.loads(tf.read())
-
-        downsample_ratio = int(config.get("parameters", "downsample_ratio"))
-
-        light_locations = _get_light_info(config)
-        logging.debug(f"lights were: {light_locations}")
-
-        self._lights_info = light_locations
-        self._num_lights = len(light_locations)
-
-        self.num_frames = len(image_transforms["frames"])
+        frame_transforms, downsample_ratio = gather_image_metadata(config)
+        self.num_frames = len(frame_transforms)
 
         # 2. Scene images
         # We must always load the depth channel since that is used to determine
-        # NOTE: We may need to explicitly load the comnined channel as well.
         # pixel occupancy
-        channels_to_load = config.get("images", "channels") + ["depth"]
+        channels_to_load = list(set(channels + ["depth"]))
 
         # for each frame in the split
+        pixel_streams = {channel_name: [] for channel_name in channels_to_load}
         data_path = config.get("paths", "data_path")
-        for image_number, frame in tqdm(
-            enumerate(image_transforms["frames"]),
+        for frame_number, frame in tqdm(
+            enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
-            logging.info(f"Loading data from image {frame['file_path']}")
+            logging.info(f"Loading data from frame {frame['file_path']}")
 
             # get all of the data attrs and load in the image cache
-            W, H, images = rr.load_image_channels(
-                image_number,
+            W, H, images = il.load_frame_channels(
+                frame_number,
                 channels=channels_to_load,
                 data_path=data_path,
                 downsample_ratio=downsample_ratio,
             )
 
             # for each channel, extract the occupied pixels and place them in the stream
-            occupancy_mask = rr.get_occupancy(images["depth"])
+            rr.get_occupancy(images["depth"])
 
-            pixel_streams = {channel_name: [] for channel_name in images.keys()}
-            for image_channel in images:
+            for image_channel, image in images.items():
                 if image_channel == "depth":
                     continue
-                no_alpha_image = images[image_channel][..., :-1]
-                pixel_streams[image_channel].append(no_alpha_image[occupancy_mask])
+                pixel_stream = image2stream(image)
+                pixel_streams[image_channel].append(pixel_stream)
 
         # Concatenate all pixel streams and form the feature tensor
         for image_channel in pixel_streams:
             streams = pixel_streams[image_channel]
             pixel_streams[image_channel] = torch.as_tensor(np.concatenate(streams))
 
-        # combine loaded steams in alphabetical order into an (Pixels, Channels) tensor
-        stored_channels = sorted(pixel_streams)
+        # combine loaded steams in the order given by the channels input
         self._feats = torch.stack(
-            [pixel_streams[channel] for channel in stored_channels], dim=1
+            [pixel_streams[channel] for channel in channels], dim=1
         ).float()
 
         # Tracking for documentation and meta-data
-        self.stored_chanels = stored_channels
-
-        # TODO:
-        # If we need to compute OLAT samples here if set
-        # Ensure that all the correct channels are loaded then.
-        # Maybe should see if that is the case first.
-
-        # There should be a config option to set the target vector.
-        # Target can be:
-        #   Image pixel
-        #   Global Shading (maybe)
+        self.stored_chanels = channels
 
         def __getitem__(self, idx):
             return self._feats[idx]
 
         def __len__(self):
             return self._len
+
+
+class IntrinsicGlobalDataset(IntrinsicDataset):
+    """Torch dataset for the Intrinsic Dataset.
+    Items loaded are in the form: [Full image, albedo, shading, normal]
+    """
+
+    def __init__(self, config):
+        super().__init__(config, ["full", "albedo", "shading", "normal"])
+
+
+class IntrinsicDiffuseDataset(IntrinsicDataset):
+    """Torch dataset for the Intrinsic Dataset.
+    Items loaded are in the form: [Diffuse image, albedo, shading, normal]
+    """
+
+    def __init__(self, config):
+        super().__init__(config, ["diffuse", "albedo", "shading", "normal"])
 
 
 class OLATDataset(Dataset):

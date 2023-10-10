@@ -40,7 +40,6 @@ def format_image_path(frame_number, data_path=None, channel="", light=""):
 
 
 # FIXME: Remove the lights info from the paths, or see if they are still needed.
-# NOTE: Could also just pass the config object here instead...
 def get_image_paths(frame_number, data_path=None, channels=[], lighting=[]):
     """Get paths to images of specified channels for a given frame.
 
@@ -60,15 +59,22 @@ def get_image_paths(frame_number, data_path=None, channels=[], lighting=[]):
         (channel := lt): format_image_path(frame_number, data_path, channel)
         for lt in lighting
     }
-    image_paths["ground_truth"] = format_image_path(frame_number, data_path, "")
 
-    # read in other channels beside combined
+    # Full channel is the name for the full render of the frame
+    # it has no sufix in the datset, and therefore must be treated differently.
+    full_channel_name = "full"
+    if full_channel_name in channels:
+        image_paths[full_channel_name] = format_image_path(frame_number, data_path, "")
+
+    # read in other channels beside full
     image_paths.update(
         {
             channel: format_image_path(frame_number, data_path, channel)
             for channel in channels
+            if channel != full_channel_name
         }
     )
+
     return image_paths
 
 

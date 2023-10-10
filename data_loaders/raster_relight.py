@@ -475,8 +475,9 @@ def raster_from_directions_torch(
 def get_occupancy(depth_image):
     """Get the occupancy of the image sample i.e.,
     there where there is finite depth and therefore a surface.
+
     depth_image : nparray of the depth image where +ve values in the alpha channel
-                  indicate finite depth
+                  indicate finite depth. Dim(3) RGB(A) or Dim(2) Alpha accepted.
     """
     if depth_image.ndim == 3:
         depth_alpha = depth_image[..., -1]
@@ -484,8 +485,8 @@ def get_occupancy(depth_image):
         depth_alpha = depth_image
     else:
         raise ValueError(
-            "Depth image of incompatible shape. Must be RGB or RGBD with 3 dimensions, \
-            or grayscale with 2."
+            "Depth image of incompatible shape. Must be RGB(A) with 3 dimensions, \
+            or grayscale/alpha with 2."
         )
 
     return depth_alpha > 0.0
