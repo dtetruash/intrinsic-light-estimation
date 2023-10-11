@@ -64,10 +64,16 @@ def validate_split(config):
 # No OLAT needed: Should have the same base class, which just load different channels
 # Intrinsic item:       albedo, normal, combined shading, combined image
 # DiffuseIntrinsicitem: albedo, normal, combined shading, combined diffuse image
+# Intrinsic Attrs:      get_frame(number) -> image or dicr of images
 #
 # Needs to make OLATS:
 # OLAT item:            albedo, normal, OLAT Shading, OLAT Image (for all lights)
 # Single OLAT item:     albedo, normal, OLAT Shading, OLAT Image (for one light)
+# OLAT Attrs:      get_frame(number, Optional[light]) -> image or dicr of images
+#
+#
+# The attrs function is needed to recostruct images after the fact, for validation
+# etc.
 
 
 def image2stream(image, occupancy_mask):
@@ -124,6 +130,7 @@ class IntrinsicDataset(Dataset):
         channels_to_load = list(set(channels + ["depth"]))
 
         # for each frame in the split
+        self.frames = []
         pixel_streams = {channel_name: [] for channel_name in channels_to_load}
         data_path = config.get("paths", "data_path")
         for frame_number, frame in tqdm(
@@ -140,6 +147,9 @@ class IntrinsicDataset(Dataset):
                 data_path=data_path,
                 downsample_ratio=downsample_ratio,
             )
+
+            # Save the dist for visualization use later.
+            self.frames.append(images)
 
             # for each channel, extract the occupied pixels and place them in the stream
             rr.get_occupancy(images["depth"])
@@ -161,7 +171,8 @@ class IntrinsicDataset(Dataset):
         ).float()
 
         # Tracking for documentation and meta-data
-        self.stored_chanels = channels
+        self.chanels = channels
+        self.dim = (W, H)  # Assuing that all images have the same dimensions.
 
         def __getitem__(self, idx):
             return self._feats[idx]
@@ -169,10 +180,33 @@ class IntrinsicDataset(Dataset):
         def __len__(self):
             return self._len
 
+        def get_frame_images(self, frame_number):
+            """Get the loaded frame's channels by its number.
+
+            Args:
+            frame_number (int): number of the frame whose image dict to get
+
+            Returns:
+                Dictionary of unaltered image channels of the frame
+            """
+            return self.frames[frame_number]
+
+        def get_frame_decomposition(frame_number):
+            """Get the loaded frame's channels as flattened data streams. Useful
+            for recombining with infered intrinsic attributes like lighting.
+
+            Args:
+                frame_number (int): number of the frame whose stream dict to get
+
+            Returns:
+                Dictionary of flattened (only occupied) pixel streams for the frame
+            """
+            return self.decomposition[frame_number]
+
 
 class IntrinsicGlobalDataset(IntrinsicDataset):
     """Torch dataset for the Intrinsic Dataset.
-    Items loaded are in the form: [Full image, albedo, shading, normal]
+    Items loaded are in the form: [full, albedo, shading, normal]
     """
 
     def __init__(self, config):
@@ -181,7 +215,7 @@ class IntrinsicGlobalDataset(IntrinsicDataset):
 
 class IntrinsicDiffuseDataset(IntrinsicDataset):
     """Torch dataset for the Intrinsic Dataset.
-    Items loaded are in the form: [Diffuse image, albedo, shading, normal]
+    Items loaded are in the form: [diffuse, albedo, shading, normal]
     """
 
     def __init__(self, config):
@@ -205,7 +239,9 @@ class OLATDataset(Dataset):
 
         # Is this a single OLAT dataset?
         # NOTE: Could also do this by asking if single_olat_light is set?
-        self._is_single_OLAT = config.get("dataset", "single_olat", fallback=False)
+        self._is_single_OLAT = config.getboolean(
+            "dataset", "single_olat", fallback=False
+        )
         if self._is_single_OLAT:
             try:
                 self._single_OLAT_light = config.get("dataset", "single_olat_light")
@@ -217,21 +253,16 @@ class OLATDataset(Dataset):
                 )
 
         # Get image transforms_file
-        # TODO: Move to a function as this is used in all datasets
-        with open(config.get("paths", "transforms_file"), "r") as tf:
-            image_transforms = json.loads(tf.read())
+        frame_transforms, downsample_ratio = gather_image_metadata(config)
 
-        downsample_ratio = int(config.get("parameters", "downsample_ratio"))
+        self.num_frames = len(frame_transforms["frames"])
+        frame_transforms["camera_angle_x"]
 
         light_locations = _get_light_info(config)
         logging.debug(f"lights were: {light_locations}")
 
-        camera_angle_x = image_transforms["camera_angle_x"]
-
         self._lights_info = light_locations
         self._num_lights = len(light_locations)
-
-        self.num_frames = len(image_transforms["frames"])
 
         # An attribute which collects dicts of tuples of tensors accosiated
         # with each frame and light
@@ -242,13 +273,13 @@ class OLATDataset(Dataset):
         # The structure of this code block should be:
         # for frame in set:
         #       Load those attrs which are needed to compute OLAT
-        #           get_frame_components() -> albedo, normals, depth, posed_points
+        #           get_intrinsic_components() -> albedo, normals, depth, posed_points
         #       Compute the OLAT (per light or for one given light)
         #           compute_olat_for_frame(components, light_info) -> [olat_smaples]
         #       Record the arrts and the OLAT
 
         for image_number, frame in tqdm(
-            enumerate(image_transforms["frames"]),
+            enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
@@ -258,9 +289,8 @@ class OLATDataset(Dataset):
             (
                 W,
                 H,
-                image_albedo,
-                normal_pixels,
-                depth,
+                albedo,
+                world_normals,
                 posed_points,
                 occupancy_mask,
             ) = rr.gather_intrinsic_components(
@@ -273,19 +303,6 @@ class OLATDataset(Dataset):
 
             # STEP 1: Load the components
 
-            # load image parameters
-            intrinsics, c2w, R, T = rr.get_camera_parameters(
-                W, H, camera_angle_x, image_number, image_transforms
-            )
-
-            # Transform notmal pixel valuse from pixel values to world normals
-            logging.debug(f"Normals pixels shape: {normal_pixels.shape}")
-            camera_normals = rr.get_camera_space_normals_from_pixels(normal_pixels)
-            world_normals = rr.to_world_space_normals(camera_normals, R)
-
-            # project depth to get 3d coords
-            # For now, and testing, we save the full point cloud object
-            posed_points = rr.project_and_pose_3d_points_via_rgbd(rgbd, intrinsics, c2w)
             num_samples_per_light = posed_points.shape[0]
 
             # For reconstruction purposes
@@ -300,9 +317,6 @@ class OLATDataset(Dataset):
             else:
                 end_indexes.append(end_indexes[-1] + num_samples_per_light)
 
-            # normalize albedo
-            albedo = image_albedo / 255.0
-
             # TODO: Add switch to either load a single OLAT or all of them
             if self._is_single_OLAT:
                 # don't do for loop and don't off-set but number of lights
@@ -314,8 +328,12 @@ class OLATDataset(Dataset):
             for light in light_locations:
                 # create raster images of pixels for the loaded image
                 light_loc = light_locations[light]
-                raster_image_pixels, (light_vectors, _), _ = rr.compute_OLAT_pixels(
-                    world_normals, albedo, posed_points, light_loc, T
+                (
+                    raster_image_pixels,
+                    (light_vectors, _),
+                    _,
+                ) = rr.compute_OLAT_pixelstream(
+                    world_normals, albedo, posed_points, light_loc, return_norms=True
                 )
                 raster_images_list += [raster_image_pixels]
 
@@ -335,6 +353,8 @@ class OLATDataset(Dataset):
                     occupancy_mask,
                 )
 
+            # TODO: Add interface to this to change everywhere else and abstract from
+            # the use do the raw atributes structure.
             self.attributes.append(image_attributes)
 
             # save output
@@ -388,11 +408,43 @@ class OLATDataset(Dataset):
         lit form by the index within its image's occupied pixels
         """
         feats = self.feats[index]
-        target = self.target[index]
-        # print(F"DEBUG: feats_concat: {self.feats[index]}, {self.feats[index].shape}")
-        # print(F"DEBUG: feats: {feats}, {feats.shape}")
-        # print(f'DEBUG: target: {target.shape}')
-        return feats, target
+
+        if self.target:
+            target = self.target[index]
+            return feats, target
+        else:
+            return feats
+
+    def get_frame_attributes(self, frame_number, light_name=None):
+        """Get the attributes of a given frame, and optionally under a given light.
+
+        Args:
+            frame_number (int): frame whose attributes to get
+            light_name (str): the name identifier of the light_name
+                under which the image should be reperoduced.
+
+        Raises:
+            ValueError: if the dataset does not record per light information
+                while a light name is given.
+        """
+        raise NotImplementedError()
+
+        if self.single_olat and light_name is not None:
+            raise ValueError(
+                "A single OLAT sample dataset does not contain light name information."
+            )
+
+        def index_into_frame(frame_number):
+            pass
+
+        def index_into_light(light_name, frame_attributes):
+            pass
+
+        frame_attributes = index_into_frame(frame_number)
+        if not light_name:
+            return frame_attributes
+
+        return index_into_light(light_name, frame_attributes)
 
 
 if __name__ == "__main__":

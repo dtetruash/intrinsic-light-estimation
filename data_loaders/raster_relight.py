@@ -62,7 +62,7 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
     """Gather intrinsin components of a frame needed to combine into OLAT samples.
 
     Here, we load needed images of a frame, compute the 3d point cloud of each pixel,
-    and return them as streams of occupied pixels.
+    and return them as streams of occupied pixels (N, 3).
 
     Args:
         frame_number (int): fame to gather components for
@@ -72,14 +72,12 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
         downsample_ratio (int): positive downsampling ratio
 
     Returns:
-        [TODO:return]
-    """
-    """Load images into (N, ...) ndarrays of needed dtype of only occupied pixels.
-    Return a tuple of ndarrays with flattened and occupied pixel attributes and
-    information and handful of specialized formats
-    Also return an rbd image for later use in projecting depth.
-
-    Return (albedo, normals, depth, image_rgbd, occupency_mask)
+        Width of the frame,
+        Height of the frame,
+        albedo stream (N, 3),
+        world-space normal vectors stream (N, 3),
+        posed point cloud (N, 3),
+        occupancy mask for the WxH image (W,H, 1),
     """
 
     # Load raw image data
@@ -178,7 +176,6 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
         H,
         albedo[occupancy_mask],
         world_normals[occupancy_mask],
-        depth_normalized[occupancy_mask],
         posed_points,
         occupancy_mask,
     )
@@ -400,25 +397,23 @@ def shade_albedo_torch(albedo, shading):
     return image.float()
 
 
-def compute_OLAT_pixels(
-    world_normals,
-    albedo,
-    posed_points,
-    light_location,
+def compute_OLAT_pixelstream(
+    world_normals, albedo, posed_points, light_location, return_light_vectors=False
 ):
-    """Compute the OLAT rendering of a collection of posed points with some albedo lit
-    by a pointlight at a known location.
+    """Compute the OLAT rendering of a posed and oriented point cloud
+    with some albedo lit by a pointlight at a known location.
 
     Args:
-        world_normals : ndarray of per-pixel normals (N, 3) in range [-1,1]^3
-        albedo        : ndattay of per-pixels albedo (N, 3) in range [0,1]^3
-        posed_points  : ndarray of per-pixel projected 3d locations (N, 3)
-        light_location: ndarray of the location of the light to render with (3,)
+        world_normals (ndarray):  ndarray of per-pixel normals (N, 3) in range [-1,1]^3
+        albedo (ndarray):  per-pixels albedo (N, 3) in range [0,1]^3
+        posed_points (ndarray): per-pixel projected 3d locations (N, 3)
+        light_location (ndarray):  per-pixel projected 3d locations (N, 3)
+        return_light_vectors (bool): retrun the light vectors and squred norms
 
     Returns:
-        return OLAT rendred pixels, tuple of light vectors and their square norms
+        Flat OLAT rendred pixel stream,
+        optinaly a tuple of light vectors and their squared norms
     """
-
     # shapes
     assert (
         world_normals.shape == albedo.shape
@@ -426,18 +421,16 @@ def compute_OLAT_pixels(
         Were {world_normals.shape} and {albedo.shape}."
 
     logging.debug(
-        f"in compute_raster: posed_points - {posed_points.shape}, \
+        f"In compute_OLAT_pixelstream: posed_points - {posed_points.shape}, \
         light_location: {light_location.shape}"
     )
-    # #### Get Light Distances for First Light
 
     light_vectors, light_vector_norms_sqr = compute_light_vectors(
         posed_points, light_location
     )
 
     shading = compute_clipped_dot_prod(light_vectors, world_normals)
-
-    raster = shade_albedo(albedo, shading)
+    render = shade_albedo(albedo, shading)
 
     logging.debug(
         f"in raster: albedo type is {albedo.dtype} and range \
@@ -448,14 +441,17 @@ def compute_OLAT_pixels(
         in [{shading.min(), shading.max()}]"
     )
     logging.debug(
-        f"in raster: raster type is {raster.dtype} and range \
-        in [{raster.min(), raster.max()}]"
+        f"in raster: raster type is {render.dtype} and range \
+        in [{render.min(), render.max()}]"
     )
 
-    return (
-        raster,
-        (light_vectors, light_vector_norms_sqr),
-    )
+    if return_light_vectors:
+        return (
+            render,
+            (light_vectors, light_vector_norms_sqr),
+        )
+    else:
+        return render
 
 
 def raster_from_directions(light_dirs, albedo, world_normals, return_shading=False):
@@ -543,7 +539,7 @@ def create_OLAT_samples_for_frame():
     output_OLATs = [
         [
             light_name,
-            compute_OLAT_pixels(normals, albedo, posed_points, light_location)[0],
+            compute_OLAT_pixelstream(normals, albedo, posed_points, light_location)[0],
         ]
         for (light_name, light_location) in light_locations.items()
     ]
