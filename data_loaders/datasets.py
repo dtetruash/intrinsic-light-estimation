@@ -25,37 +25,50 @@ logging.basicConfig(filename="datasets.log", encoding="utf-8", level=logging.INF
 # logging.getLogger().addHandler(logging.StreamHandler())
 
 
-def _get_light_info(config):
+def _get_light_info(config, is_single_olat=False):
     light_file_path = config.get("paths", "lights_file")
     with open(light_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
 
     logging.info(
-        f"raster dataloader: get_lights_info: Loaded {light_file_path}. \
+        f"OLAT dataset: get_lights_info: Loaded {light_file_path}. \
         Number of lights is {len(lights_info['lights'])}"
     )
 
-    light_transforms = {
-        light["name_light"].lower(): np.array(light["transformation_matrix"])
+    def get_location(light):
+        return rr.to_translation(np.array(light["transformation_matrix"]))
+
+    light_locations = {
+        light["name_light"].lower(): get_location(light)
         for light in lights_info["lights"]
     }
-    light_locations = {
-        name: rr.to_translation(transform)
-        for (name, transform) in light_transforms.items()
-    }
+
+    if is_single_olat:
+        # if only a single light is required for the dataset, then find it
+        # and override the location dict.
+        try:
+            single_olat_light = config.get("dataset", "single_olat_light").lower()
+        except NoOptionError as e:
+            raise type(e)(
+                e.message
+                + " If the 'single_olat' dataset option is set, \
+            the specification the 'single_olat_light' option is required."
+            )
+        light_locations = {single_olat_light: light_locations[single_olat_light]}
 
     return light_locations
 
 
 def validate_split(config):
-    if config.has_option("paths", "split"):
+    if not config.has_option("paths", "split"):
+        logging.info("Split option in config.ini is not set. Using fallback 'train'")
         config.set("paths", "split", "train")
-        split = "train"
-
-    if split not in ["train", "val", "test"]:
-        raise ValueError(
-            f"Split must be either 'train' or 'val' or 'test' and was {split}"
-        )
+    else:
+        split = config.get("paths", "split", fallback="train")
+        if split not in ["train", "val", "test"]:
+            raise ValueError(
+                f"Split must be either 'train' or 'val' or 'test' and was {split}"
+            )
 
 
 # TODO: Rename illumination to shading.
@@ -223,149 +236,134 @@ class IntrinsicDiffuseDataset(IntrinsicDataset):
 
 
 class OLATDataset(Dataset):
-    def __init__(self, split="train"):
+    def __init__(self, config, is_single_olat=False):
         validate_split(config)
 
         # init empty containers
         # These are used for the constuction of the overall Tensor at the end
         # of this method
+        # NOTE: In the other dataset this is a dict of lists.
         world_normals_list = []
         aldedo_list = []
-        raster_images_list = []
+        olat_pixelstream_list = []
         target_list = []
         occupancy_list = []
         end_indexes = []
         self._len = 0
 
         # Is this a single OLAT dataset?
-        # NOTE: Could also do this by asking if single_olat_light is set?
-        self._is_single_OLAT = config.getboolean(
-            "dataset", "single_olat", fallback=False
-        )
-        if self._is_single_OLAT:
-            try:
-                self._single_OLAT_light = config.get("dataset", "single_olat_light")
-            except NoOptionError as e:
-                raise type(e)(
-                    e.message
-                    + " If the 'single_olat' dataset option is set, \
-                the specification the 'single_olat_light' option is required."
-                )
+        self._is_single_OLAT = is_single_olat
 
         # Get image transforms_file
         frame_transforms, downsample_ratio = gather_image_metadata(config)
 
         self.num_frames = len(frame_transforms["frames"])
-        frame_transforms["camera_angle_x"]
 
-        light_locations = _get_light_info(config)
+        # Get light transform file
+        light_locations = _get_light_info(config, self._is_single_OLAT)
         logging.debug(f"lights were: {light_locations}")
+        if self._is_single_OLAT:
+            logging.debug("Only one light used since single_olat_light is set.")
 
         self._lights_info = light_locations
         self._num_lights = len(light_locations)
 
-        # An attribute which collects dicts of tuples of tensors accosiated
-        # with each frame and light
-        self.attributes = []
-
         data_path = config.get("paths", "data_path")
 
-        # The structure of this code block should be:
-        # for frame in set:
-        #       Load those attrs which are needed to compute OLAT
-        #           get_intrinsic_components() -> albedo, normals, depth, posed_points
-        #       Compute the OLAT (per light or for one given light)
-        #           compute_olat_for_frame(components, light_info) -> [olat_smaples]
-        #       Record the arrts and the OLAT
+        # List of dicts of {albedo, normal}
+        self._frame_attributes = []
+        # List of dicts of {albedo stream, normal stream}
+        self._attribute_pixelstreams = []
 
-        for image_number, frame in tqdm(
+        # Dict of lists of dicts ([light][frane]{shading, image})
+        self._frame_olats = {light: [] for light in light_locations}
+        # Dict of lists of dicts ([light][frane]{shading stream, image stream})
+        self._olat_pixelstreams = {light: [] for light in light_locations}
+
+        for frame_number, frame in tqdm(
             enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
             logging.info(f"Loading data from image {frame['file_path']}")
 
+            # BEGIN COMPUTING OLAT:
+
+            # STEP 1: Load the components
             # get all of the data attrs and load in the image cache
             (
                 W,
                 H,
+                images,
                 albedo,
                 world_normals,
                 posed_points,
                 occupancy_mask,
             ) = rr.gather_intrinsic_components(
-                image_number, downsample_ratio=downsample_ratio
+                frame_number, downsample_ratio=downsample_ratio
             )
 
-            # TODO: Call rr.compute_OLAT_pixels here
-
-            # BEGIN COMPUTING OLAT:
-
-            # STEP 1: Load the components
+            self._frame_attributes.append(images)
+            self._attribute_pixelstreams.append(
+                {
+                    "albedo": albedo,
+                    "normal": world_normals,
+                }
+            )
 
             num_samples_per_light = posed_points.shape[0]
 
-            # For reconstruction purposes
-            # Used to see where in the stream the content of each frame begins
-            # and ends. More favourable solution than the self._attributes
-            # structure.
-            # FIXME: Remove the image_attributes section, and implement a function
-            # which loads the attrs from via __get_item__ and end_idxs
-            # + the shared data like width and height.
-            if len(end_indexes) == 0:
-                end_indexes.append(num_samples_per_light)
-            else:
-                end_indexes.append(end_indexes[-1] + num_samples_per_light)
-
-            # TODO: Add switch to either load a single OLAT or all of them
-            if self._is_single_OLAT:
-                # don't do for loop and don't off-set but number of lights
-                raise NotImplementedError()
-
             # STEP 2: Compute the OLAT samples
             # Also this collects the attribute per image for reconstructions.
-            image_attributes = {}
             for light in light_locations:
-                # create raster images of pixels for the loaded image
+                # create OLAT images of pixels for the loaded image
                 light_loc = light_locations[light]
                 (
-                    raster_image_pixels,
+                    olat_image_pixels,
+                    olat_shading_pixels,
                     (light_vectors, _),
                     _,
                 ) = rr.compute_OLAT_pixelstream(
-                    world_normals, albedo, posed_points, light_loc, return_norms=True
+                    world_normals,
+                    albedo,
+                    posed_points,
+                    light_loc,
+                    return_light_vectors=True,
+                    return_shading=True,
                 )
-                raster_images_list += [raster_image_pixels]
+                olat_pixelstream_list += [olat_image_pixels]
 
                 # set the target. Keep consistent with inputs
                 # must be computed per pixel using its posed_point
                 target_list += [light_vectors]
 
-                # add attributed and raster for later use
-                image_attributes[light] = (
-                    W,
-                    H,
-                    raster_image_pixels,
-                    world_normals,
-                    albedo,
-                    posed_points,
-                    light_vectors,
-                    occupancy_mask,
+                self._olat_pixelstreams[light].append(
+                    {"shading": olat_shading_pixels, "image": olat_image_pixels}
                 )
 
-            # TODO: Add interface to this to change everywhere else and abstract from
-            # the use do the raw atributes structure.
-            self.attributes.append(image_attributes)
+                shading_image = rr.reconstruct_image(
+                    W, H, olat_shading_pixels, occupancy_mask, add_alpha=True
+                )
+                olat_image = rr.reconstruct_image(
+                    W, H, olat_image_pixels, occupancy_mask, add_alpha=True
+                )
+                self._frame_olats[light].append(
+                    {"shading": shading_image, "image": olat_image}
+                )
+
+                # break out of the loop, since the chosen light is first in order
+                if self._is_single_OLAT:
+                    break
 
             # save output
             added_samples = num_samples_per_light * self._num_lights
             logging.info(
                 f"Appending {num_samples_per_light} samples \
-                from image {image_number} per light."
+                from image {frame_number} per light."
             )
             logging.info(
                 f"Appending {added_samples} samples \
-                from image {image_number}."
+                from image {frame_number}."
             )
 
             # append to list, we will concat later
@@ -378,13 +376,13 @@ class OLATDataset(Dataset):
 
             logging.info(
                 f"New number of samples \
-                after loading image {image_number} is {self._len}"
+                after loading image {frame_number} is {self._len}"
             )
 
         # concat the outputs and make them tensors
         self._world_normals = torch.as_tensor(np.concatenate(world_normals_list))
         self._albedo = torch.as_tensor(np.concatenate(aldedo_list))
-        self._raster_images = torch.as_tensor(np.concatenate(raster_images_list))
+        self._raster_images = torch.as_tensor(np.concatenate(olat_pixelstream_list))
 
         self.feats = torch.stack(
             [self._world_normals, self._albedo, self._raster_images], dim=1
@@ -407,13 +405,10 @@ class OLATDataset(Dataset):
         """Get the features of an image pixel as well as the direction from where it is
         lit form by the index within its image's occupied pixels
         """
+        # NOTE: Leaving target vectors for back-compatability
         feats = self.feats[index]
-
-        if self.target:
-            target = self.target[index]
-            return feats, target
-        else:
-            return feats
+        target = self.target[index]
+        return feats, target
 
     def get_frame_attributes(self, frame_number, light_name=None):
         """Get the attributes of a given frame, and optionally under a given light.
@@ -429,11 +424,6 @@ class OLATDataset(Dataset):
         """
         raise NotImplementedError()
 
-        if self.single_olat and light_name is not None:
-            raise ValueError(
-                "A single OLAT sample dataset does not contain light name information."
-            )
-
         def index_into_frame(frame_number):
             pass
 
@@ -446,7 +436,59 @@ class OLATDataset(Dataset):
 
         return index_into_light(light_name, frame_attributes)
 
+        def _check_light_name(self, light_name):
+            if self._is_single_OLAT:
+                if light_name is not None:
+                    raise ValueError(
+                        "A single OLAT sample dataset does not contain \
+                        light name information. Call with light_name=None"
+                    )
+                light_name = list(self._lights_info.keys())[0]
+
+            assert (
+                light_name in self._lights_info.keys()
+            ), f"Light with name {light_name} is not loaded in _light_info"
+
+            return light_name
+
+        def get_frame_images(self, frame_number, light_name=None):
+            """Get the loaded frame's channels by its number and the light used
+            to render them.
+
+            Args:
+                frame_number (int): number of the frame whose image dict to get
+                light_name (str): name of the light to use.
+                    If None, assumed to be the only possible light
+
+            Returns:
+                Dictionary of unaltered image channels of the frame
+            """
+            light_name = self._check_light_name(light_name)
+            frame_attrs = self._frame_attributes[frame_number]
+            frame_olat = self._frame_olats[light_name][frame_number]
+
+            return frame_olat | frame_attrs
+
+        def get_frame_decomposition(frame_number, light_name=None):
+            """Get the loaded frame's channels as flattened data streams. Useful
+            for recombining with infered intrinsic attributes like lighting.
+
+            Args:
+                frame_number (int): number of the frame whose stream dict to get
+                light_name (str): name of the light to use.
+                    If None, assumed to be the only possible light
+
+            Returns:
+                Dictionary of flattened (only occupied) pixel streams for the frame
+            """
+            light_name = self._check_light_name(light_name)
+            attr_pixels = self._attribute_pixelstreams[frame_number]
+            olat_pixels = self._olat_pixelstreams[light_name][frame_number]
+            return attr_pixels | olat_pixels
+
 
 if __name__ == "__main__":
+    # TODO: Test by creating all datasets, and reconstructing a random frame from it
+    # via the stream and via the loaded frames themselves?
     ds = OLATDataset()
     print(f"Loaded dataset has {len(ds)} samples.")

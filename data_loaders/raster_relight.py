@@ -74,6 +74,7 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
     Returns:
         Width of the frame,
         Height of the frame,
+        Dictionary of the unaltered images for normal, albedo, and depth
         albedo stream (N, 3),
         world-space normal vectors stream (N, 3),
         posed point cloud (N, 3),
@@ -174,6 +175,7 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
     return (
         W,
         H,
+        images,
         albedo[occupancy_mask],
         world_normals[occupancy_mask],
         posed_points,
@@ -398,21 +400,29 @@ def shade_albedo_torch(albedo, shading):
 
 
 def compute_OLAT_pixelstream(
-    world_normals, albedo, posed_points, light_location, return_light_vectors=False
+    world_normals,
+    albedo,
+    posed_points,
+    light_location,
+    return_light_vectors=False,
+    return_shading=False,
 ):
     """Compute the OLAT rendering of a posed and oriented point cloud
     with some albedo lit by a pointlight at a known location.
 
     Args:
-        world_normals (ndarray):  ndarray of per-pixel normals (N, 3) in range [-1,1]^3
+        world_normals (ndarray):  per-pixel normals (N, 3) in range [-1,1]^3
         albedo (ndarray):  per-pixels albedo (N, 3) in range [0,1]^3
         posed_points (ndarray): per-pixel projected 3d locations (N, 3)
         light_location (ndarray):  per-pixel projected 3d locations (N, 3)
-        return_light_vectors (bool): retrun the light vectors and squred norms
+        return_light_vectors (bool): return the light vectors and squared norms
+        return_shading (bool): return the shading pixels
 
     Returns:
-        Flat OLAT rendred pixel stream,
-        optinaly a tuple of light vectors and their squared norms
+        Flat OLAT rendered pixel stream,
+        optionally the intermediary shading used for the rendered pixel stream,
+        optionally a tuple of light vectors and their squared norms.
+        Returned in this order.
     """
     # shapes
     assert (
@@ -445,13 +455,15 @@ def compute_OLAT_pixelstream(
         in [{render.min(), render.max()}]"
     )
 
+    ret = [render]
+
+    if return_shading:
+        ret.append(shading)
+
     if return_light_vectors:
-        return (
-            render,
-            (light_vectors, light_vector_norms_sqr),
-        )
-    else:
-        return render
+        ret.append((light_vectors, light_vector_norms_sqr))
+
+    return tuple(ret)
 
 
 def raster_from_directions(light_dirs, albedo, world_normals, return_shading=False):
@@ -472,7 +484,7 @@ def get_occupancy(depth_image):
     """Get the occupancy of the image sample i.e.,
     there where there is finite depth and therefore a surface.
 
-    depth_image : nparray of the depth image where +ve values in the alpha channel
+    depth_image : ndarray of the depth image where +ve values in the alpha channel
                   indicate finite depth. Dim(3) RGB(A) or Dim(2) Alpha accepted.
     """
     if depth_image.ndim == 3:
@@ -488,9 +500,24 @@ def get_occupancy(depth_image):
     return depth_alpha > 0.0
 
 
-def reconstruct_image(W, H, pixels, occupancy):
-    image_container = np.ones((W, H, 3))
-    image_container[occupancy] = pixels
+def reconstruct_image(W, H, pixels, occupancy, add_alpha=False):
+    """Reconstruct image from pixel and occupancy as RGB or RGBA.
+
+    Args:
+        W (int): width of image
+        H (int): height of image
+        pixels (ndarray): array of image pixels (N,3)
+        occupancy (ndarray): binary array of pixel occupancy
+        add_alpha (bool): add alpha channel from occupancy
+
+    Returns:
+        ndarray image array with given pixels in RGB or RGBA mode
+    """
+    image_channels = 4 if add_alpha else 3
+    image_container = np.ones((W, H, image_channels))
+    image_container[..., 0:2][occupancy] = pixels
+    if add_alpha:
+        image_container[..., -1] = occupancy.astype(np.float32)
     return image_container
 
 
