@@ -55,7 +55,7 @@ def _get_light_info(config, is_single_olat=False):
         # if only a single light is required for the dataset, then find it
         # and override the location dict.
         try:
-            single_olat_light = config.get("dataset", "single_olat_light").lower()
+            single_olat_light = config.get("lighting", "single_olat_light").lower()
         except NoOptionError:
             raise ValueError(
                 "If the 'single_olat' dataset option is set, \
