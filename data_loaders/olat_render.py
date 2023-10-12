@@ -534,9 +534,9 @@ def create_OLAT_samples_for_frame():
     (
         W,
         H,
+        _,  # Don't need images in this method
         albedo,
         normals,
-        depth_remapped,
         posed_points,
         occupency_mask,
     ) = gather_intrinsic_components(
@@ -565,7 +565,7 @@ def create_OLAT_samples_for_frame():
     output_OLATs = [
         [
             light_name,
-            render_OLAT_pixelstream(normals, albedo, posed_points, light_location)[0],
+            render_OLAT_pixelstream(normals, albedo, posed_points, light_location),
         ]
         for (light_name, light_location) in light_locations.items()
     ]

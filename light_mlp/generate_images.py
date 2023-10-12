@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from matplotlib.colors import Normalize
 
-from data_loaders import raster_relight as rr
+from data_loaders import olat_render as ro
 from spherical_harmonics import spherical_harmonics as sh
 from losses.loss_functions import cosine_similarity_module
 
@@ -76,7 +76,7 @@ def generate_validation_image(model, model_class, valid_dataset):
             val_light_dir_image[occupancy_mask] = val_light_colors
 
             # Raster pixel images
-            val_raster_pixels, val_shading = rr.render_from_directions(
+            val_raster_pixels, val_shading = ro.render_from_directions(
                 light_vectors, albedo, world_normals, return_shading=True
             )
 
@@ -85,7 +85,7 @@ def generate_validation_image(model, model_class, valid_dataset):
 
             # Raster pixel image
             val_shading = sh.render_second_order_SH(light_harmonics, world_normals)
-            val_raster_pixels = rr.shade_albedo(albedo, val_shading)
+            val_raster_pixels = ro.shade_albedo(albedo, val_shading)
 
         else:
             raise ValueError(f"Unknown model class {model_class}")
@@ -104,7 +104,7 @@ def generate_validation_image(model, model_class, valid_dataset):
         gt_raster_image[occupancy_mask] = gt_raster_pixels
 
         gt_shading_image = np.ones(img_size, dtype=np.float32)
-        gt_shading = rr.compute_clipped_dot_prod(world_normals, gt_light_vectors)
+        gt_shading = ro.compute_clipped_dot_prod(world_normals, gt_light_vectors)
         gt_shading_image[occupancy_mask] = gt_shading[..., np.newaxis]
 
         # TODO: add error image loss.

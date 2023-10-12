@@ -1,8 +1,9 @@
 # Loss functions!
+import data_loaders.olat_render as ro
 import torch
+import torch.backends.mps
 import torch.nn as nn
 import torch.nn.functional as F
-import raster_relight as rr
 
 device = (
     "cuda"
@@ -21,7 +22,7 @@ def decompose_feats(feats):
 cosine_similarity_module = nn.CosineSimilarity(dim=1, eps=1e-6)
 
 
-def cosine_similarity_loss(x, y, lamb=2.0):
+def cosine_similarity_loss(x, y):
     cosine_similarity = cosine_similarity_module(x, y)
     similarity_target = (
         torch.tensor([1.0]).broadcast_to(cosine_similarity.size()).to(device)
@@ -54,6 +55,9 @@ def photometric_loss(x, feats):
     normals, albedo, images = decompose_feats(feats)
 
     pred_light_vectors = x
-    pred_images = rr.render_from_directions_torch(pred_light_vectors, albedo, normals)
+    pred_images = ro.render_from_directions_torch(pred_light_vectors, albedo, normals)
+
+    # Assrts to please the type checker, sinec above could also return shading.
+    assert isinstance(pred_images, torch.Tensor)
 
     return F.mse_loss(images, pred_images)
