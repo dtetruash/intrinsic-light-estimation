@@ -76,7 +76,7 @@ def generate_validation_image(model, model_class, valid_dataset):
             val_light_dir_image[occupancy_mask] = val_light_colors
 
             # Raster pixel images
-            val_raster_pixels, val_shading = rr.raster_from_directions(
+            val_raster_pixels, val_shading = rr.render_from_directions(
                 light_vectors, albedo, world_normals, return_shading=True
             )
 

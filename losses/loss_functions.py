@@ -54,6 +54,6 @@ def photometric_loss(x, feats):
     normals, albedo, images = decompose_feats(feats)
 
     pred_light_vectors = x
-    pred_images = rr.raster_from_directions_torch(pred_light_vectors, albedo, normals)
+    pred_images = rr.render_from_directions_torch(pred_light_vectors, albedo, normals)
 
     return F.mse_loss(images, pred_images)
