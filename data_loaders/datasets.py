@@ -235,7 +235,7 @@ class IntrinsicDataset(Dataset):
 
 
 class IntrinsicGlobalDataset(IntrinsicDataset):
-    """Torch dataset for the Intrinsic Dataset.
+    """Torch dataset for the Intrinsic Dataset with global lighting.
     Items loaded are in the form: [full, albedo, shading, normal]
     """
 
@@ -244,7 +244,7 @@ class IntrinsicGlobalDataset(IntrinsicDataset):
 
 
 class IntrinsicDiffuseDataset(IntrinsicDataset):
-    """Torch dataset for the Intrinsic Dataset.
+    """Torch dataset for the Intrinsic Dataset with diffuse lighting.
     Items loaded are in the form: [diffuse, albedo, shading, normal]
     """
 
@@ -259,7 +259,6 @@ class OLATDataset(Dataset):
         # init empty containers
         # These are used for the constuction of the overall Tensor at the end
         # of this method
-        # NOTE: In the other dataset this is a dict of lists.
         world_normals_list = []
         aldedo_list = []
         olat_pixelstream_list = []

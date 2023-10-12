@@ -382,6 +382,16 @@ def compute_clipped_dot_prod_torch(vecs_1, vecs_2):
 
 
 def shade_albedo(albedo, shading):
+    """Shade the albedo color channel according to achromatic shading of the
+    same size.
+
+    Args:
+        albedo (ndarray): array of albedo RGB pixels (N,3)
+        shading (ndarray): array of shading values in [0..1] (N,)
+
+    Returns:
+        ndarray of shaded pixels = albedo ⊙ shading
+    """
     # Compute reaster image
     image = np.empty_like(albedo)
     np.multiply(albedo, shading[:, np.newaxis], image)
@@ -563,10 +573,10 @@ def create_OLAT_samples_for_frame():
     }
 
     output_OLATs = [
-        [
+        (
             light_name,
             render_OLAT_pixelstream(normals, albedo, posed_points, light_location),
-        ]
+        )
         for (light_name, light_location) in light_locations.items()
     ]
 
@@ -574,10 +584,12 @@ def create_OLAT_samples_for_frame():
 
 
 if __name__ == "__main__":
-    OLAT_pixel_arrays, occupency_mask, W, H = create_OLAT_samples_for_frame()
+    olat_pixel_arrays, occupancy_mask, W, H = create_OLAT_samples_for_frame()
 
-    for light_name, pixels in OLAT_pixel_arrays:
+    for light_name, pixels in olat_pixel_arrays:
+        assert isinstance(pixels, np.ndarray)
+
         logging.debug(f"{light_name}: {pixels.min()}, {pixels.mean()}, {pixels.max()}")
-        output_name = f"raster_{light_name}.png"
-        image_container = reconstruct_image(W, H, pixels, occupency_mask)
+        output_name = f"olat_{light_name}.png"
+        image_container = reconstruct_image(W, H, pixels, occupancy_mask)
         plt.imsave(output_name, image_container)
