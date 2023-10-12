@@ -1,6 +1,5 @@
-"""This script hold code to manimulate the intrinsic dataset
-and to generate point-lit OLAT sampels (dubbed rasters for convenience) from
-existing sample attributes.
+"""This script holds code to manimulate the intrinsic dataset images
+and to generate point-lit OLAT sampels from existing sample attributes.
 """
 
 import logging
@@ -83,7 +82,7 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
 
     # Load raw image data
     # This also determines the with/height of the images used
-    W, H, images = il.load_image_channels(
+    W, H, images = il.load_frame_channels(
         frame_number,
         data_path=None,
         channels=["normal", "albedo", "depth"],
@@ -399,7 +398,7 @@ def shade_albedo_torch(albedo, shading):
     return image.float()
 
 
-def compute_OLAT_pixelstream(
+def render_OLAT_pixelstream(
     world_normals,
     albedo,
     posed_points,
@@ -466,13 +465,13 @@ def compute_OLAT_pixelstream(
     return tuple(ret)
 
 
-def raster_from_directions(light_dirs, albedo, world_normals, return_shading=False):
+def render_from_directions(light_dirs, albedo, world_normals, return_shading=False):
     shading = compute_clipped_dot_prod(light_dirs, world_normals)
     raster = shade_albedo(albedo, shading)
     return (raster, shading) if return_shading else raster
 
 
-def raster_from_directions_torch(
+def render_from_directions_torch(
     light_dirs, albedo, world_normals, return_shading=False
 ):
     shading = compute_clipped_dot_prod_torch(light_dirs, world_normals)
@@ -566,7 +565,7 @@ def create_OLAT_samples_for_frame():
     output_OLATs = [
         [
             light_name,
-            compute_OLAT_pixelstream(normals, albedo, posed_points, light_location)[0],
+            render_OLAT_pixelstream(normals, albedo, posed_points, light_location)[0],
         ]
         for (light_name, light_location) in light_locations.items()
     ]
