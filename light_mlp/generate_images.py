@@ -90,6 +90,8 @@ def generate_validation_image(model, model_class, valid_dataset):
         else:
             raise ValueError(f"Unknown model class {model_class}")
 
+        # TODO: Replace all of these with ro.reconstruct_image function
+
         # raster pixel image
         val_raster_image[occupancy_mask] = val_raster_pixels
 
@@ -137,6 +139,8 @@ def get_heatmap_color_array(data_array, cmap_name="hot", dmin=-1.0, dmax=1.0):
 
 def generate_heatmap_image(model, valid_dataset, image_number, light_name):
     """Create a single heatmap image via matplotlib (for now)"""
+    # FIXME: Write this method once the global-sh script works.
+    raise NotImplementedError("This method must be reworked.")
     model.eval()
     with torch.inference_mode():
         # get light dirs for given image
@@ -174,6 +178,7 @@ def generate_heatmap_image(model, valid_dataset, image_number, light_name):
 
 
 def generate_heatmap_image_grid(model, valid_dataset):
+    raise NotImplementedError("This method must be reworked")
     image_number_max = valid_dataset.num_frames
     light_names = list(valid_dataset._lights_info.keys())
     set_heatmap_params(image_number_max, light_names)
