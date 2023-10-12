@@ -7,19 +7,18 @@ of point-lit pixels without shadowing lit from a single light in the scene.
 import json
 import logging
 from configparser import NoOptionError
+from pathlib import Path
 
 import data_loaders.image_loader as il
 import data_loaders.olat_render as ro
 import numpy as np
 import torch
 from ile_utils.config import Config
+from log import get_logger
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-
-logging.basicConfig(filename="datasets.log", encoding="utf-8", level=logging.INFO)
-# If you wish to log to stdin as well:
-# logging.getLogger().addHandler(logging.StreamHandler())
+logger = get_logger(Path(__file__).name)
 
 
 def _get_light_info(config, is_single_olat=False):
@@ -66,16 +65,13 @@ def _get_light_info(config, is_single_olat=False):
     return light_locations
 
 
-def validate_split(config):
-    if not config.has_option("paths", "split"):
-        logging.info("Split option in config.ini is not set. Using fallback 'train'")
-        config.set("paths", "split", "train")
-    else:
-        split = config.get("paths", "split", fallback="train")
-        if split not in ["train", "val", "test"]:
-            raise ValueError(
-                f"Split must be either 'train' or 'val' or 'test' and was {split}"
-            )
+def validate_split(split):
+    """Check if split has allowed value, throw otherwise.
+    """
+    if split not in ["train", "val", "test"]:
+        raise ValueError(
+            f"Split must be either 'train' or 'val' or 'test' and was {split}"
+        )
 
 
 # TODO: Rename illumination to shading.
@@ -135,9 +131,10 @@ class IntrinsicDataset(Dataset):
         stored_chanels: channels loaded in order of their return by self.__getitem__
     """
 
-    def __init__(self, config, channels):
+    def __init__(self, config, channels, split="train"):
         # Value checking and validation
-        validate_split(config)
+        validate_split(split)
+        self.split = split
 
         # load information about the scene.
         # Get image transforms_file
@@ -150,9 +147,9 @@ class IntrinsicDataset(Dataset):
         channels_to_load = list(set(channels + ["depth"]))
 
         # for each frame in the split
-        frames = []
+        frames = []     1i
         pixel_streams = {channel_name: [] for channel_name in channels_to_load}
-        data_path = config.get("paths", "data_path")
+        data_path = config.get("paths", "scene_path") + "/" + self.split
         for frame_number, frame in tqdm(
             enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
@@ -253,8 +250,9 @@ class IntrinsicDiffuseDataset(IntrinsicDataset):
 
 
 class OLATDataset(Dataset):
-    def __init__(self, config, is_single_olat=False):
-        validate_split(config)
+    def __init__(self, config, split='train', is_single_olat=False):
+        validate_split(split)
+        self.split = split
 
         # init empty containers
         # These are used for the constuction of the overall Tensor at the end
@@ -284,7 +282,7 @@ class OLATDataset(Dataset):
         self._lights_info = light_locations
         self._num_lights = len(light_locations)
 
-        data_path = config.get("paths", "data_path")
+        data_path = config.get("paths", "scene_path") + "/" + self.split
 
         # List of dicts of {albedo, normal}
         self._frame_attributes = []
