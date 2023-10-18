@@ -215,8 +215,10 @@ def carry_out_training():
             batch_size=config.batch_size, subset_fraction=config.data_subset_fraction
         )
         print(
-            f"Loaded train dataset with {len(train_dl)} batches \
-            and {len(train_dl.dataset)} samples."
+            (
+                f"Loaded train dataset with {len(train_dl)} batches "
+                "and {len(train_dl.dataset)} samples."
+            )
         )
 
         valid_dl = get_dataloader(batch_size=2 * config.batch_size, split="val")

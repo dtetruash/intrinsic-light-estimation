@@ -5,15 +5,16 @@
 import os
 import logging
 from ile_utils.config import Config
+from pathlib import Path
 
 config = Config.get_config()
 
 
-def get_logger(name):
+def get_logger(file_path):
     """Get a named logger with the global logging settings.
 
     Args:
-        name (str): name of the logger (e.g., __name__)
+        name (str): file path of the logger (__file__)
 
     Returns:
         logger with global settings
@@ -28,15 +29,20 @@ def get_logger(name):
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
 
-    log_dir = config.get("logging", "log_dir", fallback="//logs")
+    log_dir = config.get("logging", "log_dir", fallback="logs")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    file_handler = logging.FileHandler(f"{log_dir}/{name}.log")
+    file_name = Path(file_path).name
+    file_handler = logging.FileHandler(f"{log_dir}/{file_name}.log")
     file_handler.setFormatter(formatter)
 
-    logger = logging.getLogger(name)
+    logger = logging.getLogger(file_name)
     logger.setLevel(logging.DEBUG)
+
+    while logger.hasHandlers():
+        logger.removeHandler(logger.handlers[0])
+
     logger.addHandler(stream_handler)
     logger.addHandler(file_handler)
 

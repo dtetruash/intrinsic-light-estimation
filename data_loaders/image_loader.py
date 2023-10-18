@@ -3,7 +3,7 @@ image files from the Intrinsic dataset and place them in correct
 format for further processing.
 """
 
-import logging
+from log import get_logger
 
 import cv2
 import numpy as np
@@ -14,6 +14,7 @@ from ile_utils.config import Config
 install_rich()
 
 config = Config.get_config()
+logger = get_logger(__file__)
 
 
 # Image loading functions
@@ -113,12 +114,11 @@ def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio
     # Load image data all as ND arrays
     images = {}
     for channel, path in image_paths.items():
-        logging.info(f"Loading {channel} from {path}.")
         try:
             if channel in ["normal"]:
                 image = read_16bit(path)
             else:
-                image = np.asarray(Image.open(path))
+                image = np.asarray(Image.open(path)) / 255.0
 
             images[channel] = image
         except ValueError:

@@ -5,9 +5,7 @@ of point-lit pixels without shadowing lit from a single light in the scene.
 
 
 import json
-import logging
 from configparser import NoOptionError
-from pathlib import Path
 
 import data_loaders.image_loader as il
 import data_loaders.olat_render as ro
@@ -18,7 +16,7 @@ from log import get_logger
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-logger = get_logger(Path(__file__).name)
+logger = get_logger(__file__)
 
 
 def _get_light_info(config, is_single_olat=False):
@@ -37,7 +35,7 @@ def _get_light_info(config, is_single_olat=False):
     with open(light_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
 
-    logging.info(
+    logger.info(
         f"OLAT dataset: get_lights_info: Loaded {light_file_path}. \
         Number of lights is {len(lights_info['lights'])}"
     )
@@ -66,8 +64,7 @@ def _get_light_info(config, is_single_olat=False):
 
 
 def validate_split(split):
-    """Check if split has allowed value, throw otherwise.
-    """
+    """Check if split has allowed value, throw otherwise."""
     if split not in ["train", "val", "test"]:
         raise ValueError(
             f"Split must be either 'train' or 'val' or 'test' and was {split}"
@@ -139,24 +136,27 @@ class IntrinsicDataset(Dataset):
         # load information about the scene.
         # Get image transforms_file
         frame_transforms, downsample_ratio = gather_image_metadata(config)
-        self.num_frames = len(frame_transforms)
-
+        self.num_frames = len(frame_transforms["frames"])
+        logger.info(f"Transform file lists {self.num_frames} frames to load.")
+        #
         # 2. Scene images
         # We must always load the depth channel since that is used to determine
         # pixel occupancy
         channels_to_load = list(set(channels + ["depth"]))
 
+        # Demensions of the loaded images
+        self.dim = None
+
         # for each frame in the split
-        frames = []     1i
-        pixel_streams = {channel_name: [] for channel_name in channels_to_load}
+        frames = []
+        pixel_streams = {channel_name: [] for channel_name in channels}
+        occupancy_masks = []
         data_path = config.get("paths", "scene_path") + "/" + self.split
         for frame_number, frame in tqdm(
             enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
-            logging.info(f"Loading data from frame {frame['file_path']}")
-
             # get all of the data attrs and load in the image cache
             W, H, images = il.load_frame_channels(
                 frame_number,
@@ -174,6 +174,7 @@ class IntrinsicDataset(Dataset):
 
             # for each channel, extract the occupied pixels and place them in the stream
             occupancy_mask = ro.get_occupancy(images["depth"])
+            occupancy_masks.append(occupancy_mask)
 
             for image_channel, image in images.items():
                 # NOTE: We might want the depth buffer later on. Could include
@@ -197,38 +198,41 @@ class IntrinsicDataset(Dataset):
         self.chanels = channels
         self._decompositions = pixel_streams
         self._frames = frames
+        # List of arrays
+        self._occupancy_masks = occupancy_masks
 
-        def __getitem__(self, idx):
-            return self._feats[idx]
+    def __getitem__(self, idx):
+        return self._feats[idx]
 
-        def __len__(self):
-            return self._len
+    def __len__(self):
+        return self._feats.shape[0]
 
-        def get_frame_images(self, frame_number):
-            """Get the loaded frame's channels by its number.
+    def get_frame_images(self, frame_number):
+        """Get the loaded frame's channels by its number.
 
-            Args:
-            frame_number (int): number of the frame whose image dict to get
+        Args:
+        frame_number (int): number of the frame whose image dict to get
 
-            Returns:
-                Dictionary of unaltered image channels of the frame
-            """
-            return self.frames[frame_number]
+        Returns:
+            Dictionary of unaltered image channels of the frame
+        """
+        return self._frames[frame_number]
 
-        def get_frame_decomposition(frame_number):
-            """Get the loaded frame's channels as flattened data streams. Useful
-            for recombining with infered intrinsic attributes like lighting.
+    def get_frame_decomposition(self, frame_number):
+        """Get the loaded frame's channels as flattened data streams. Useful
+        for recombining with infered intrinsic attributes like lighting.
 
-            Args:
-                frame_number (int): number of the frame whose stream dict to get
+        Args:
+            frame_number (int): number of the frame whose stream dict to get
 
-            Returns:
-                Dictionary of flattened (only occupied) pixel streams for the frame
-            """
-            return {
-                channel: stream_list[frame_number]
-                for channel, stream_list in self._decompositions.items()
-            }
+        Returns:
+            Dictionary of flattened (only occupied) pixel streams for the frame,
+            Binary array indicating which pixels are occupied
+        """
+        return {
+            channel: stream_list[frame_number]
+            for channel, stream_list in self._decompositions.items()
+        }, self._occupancy_masks[frame_number]
 
 
 class IntrinsicGlobalDataset(IntrinsicDataset):
@@ -236,8 +240,8 @@ class IntrinsicGlobalDataset(IntrinsicDataset):
     Items loaded are in the form: [full, albedo, shading, normal]
     """
 
-    def __init__(self, config):
-        super().__init__(config, ["full", "albedo", "shading", "normal"])
+    def __init__(self, config, split="train"):
+        super().__init__(config, ["full", "albedo", "shading", "normal"], split)
 
 
 class IntrinsicDiffuseDataset(IntrinsicDataset):
@@ -245,12 +249,12 @@ class IntrinsicDiffuseDataset(IntrinsicDataset):
     Items loaded are in the form: [diffuse, albedo, shading, normal]
     """
 
-    def __init__(self, config):
-        super().__init__(config, ["diffuse", "albedo", "shading", "normal"])
+    def __init__(self, config, split="train"):
+        super().__init__(config, ["diffuse", "albedo", "shading", "normal"], split)
 
 
 class OLATDataset(Dataset):
-    def __init__(self, config, split='train', is_single_olat=False):
+    def __init__(self, config, split="train", is_single_olat=False):
         validate_split(split)
         self.split = split
 
@@ -272,12 +276,13 @@ class OLATDataset(Dataset):
         frame_transforms, downsample_ratio = gather_image_metadata(config)
 
         self.num_frames = len(frame_transforms["frames"])
+        logger.info(f"transform file lists {self.num_frames} frames to load.")
 
         # Get light transform file
         light_locations = _get_light_info(config, self._is_single_OLAT)
-        logging.debug(f"lights were: {light_locations}")
+        logger.debug(f"lights were: {light_locations}")
         if self._is_single_OLAT:
-            logging.debug("Only one light used since single_olat_light is set.")
+            logger.debug("Only one light used since single_olat_light is set.")
 
         self._lights_info = light_locations
         self._num_lights = len(light_locations)
@@ -288,18 +293,22 @@ class OLATDataset(Dataset):
         self._frame_attributes = []
         # List of dicts of {albedo stream, normal stream}
         self._attribute_pixelstreams = []
+        # List of arrays
+        self._occupancy_masks = []
 
         # Dict of lists of dicts ([light][frane]{shading, image})
         self._frame_olats = {light: [] for light in light_locations}
         # Dict of lists of dicts ([light][frane]{shading stream, image stream})
         self._olat_pixelstreams = {light: [] for light in light_locations}
 
+        self.dim = None
+
         for frame_number, frame in tqdm(
             enumerate(frame_transforms["frames"]),
             desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
         ):
-            logging.info(f"Loading data from image {frame['file_path']}")
+            logger.info(f"Loading data from image {frame['file_path']}")
 
             # BEGIN COMPUTING OLAT:
 
@@ -317,6 +326,9 @@ class OLATDataset(Dataset):
                 frame_number, frame_transforms, downsample_ratio=downsample_ratio
             )
 
+            if self.dim is None:
+                self.dim = W, H
+
             self._frame_attributes.append(images)
             self._attribute_pixelstreams.append(
                 {
@@ -324,6 +336,7 @@ class OLATDataset(Dataset):
                     "normal": world_normals,
                 }
             )
+            self._occupancy_masks.append(occupancy_mask)
 
             num_samples_per_light = posed_points.shape[0]
 
@@ -371,11 +384,11 @@ class OLATDataset(Dataset):
 
             # save output
             added_samples = num_samples_per_light * self._num_lights
-            logging.info(
+            logger.info(
                 f"Appending {num_samples_per_light} samples \
                 from image {frame_number} per light."
             )
-            logging.info(
+            logger.info(
                 f"Appending {added_samples} samples \
                 from image {frame_number}."
             )
@@ -388,7 +401,7 @@ class OLATDataset(Dataset):
             # compute loaded lengths
             self._len += added_samples
 
-            logging.info(
+            logger.info(
                 f"New number of samples \
                 after loading image {frame_number} is {self._len}"
             )
@@ -406,11 +419,11 @@ class OLATDataset(Dataset):
         self._occupancy_mask = np.stack(occupancy_list)  # TODO: Remove after debugging
         self._end_indexes = end_indexes
 
-        logging.debug(f"Final number of samples is {self._len}")
-        logging.debug(f"World normals array has shape {self._world_normals.shape}")
-        logging.debug(f"Albedo array has shape {self._albedo.shape}")
-        logging.debug(f"Raster image array has shape {self._raster_images.shape}")
-        logging.debug(f"Target array has shape {self.target.shape}")
+        logger.debug(f"Final number of samples is {self._len}")
+        logger.debug(f"World normals array has shape {self._world_normals.shape}")
+        logger.debug(f"Albedo array has shape {self._albedo.shape}")
+        logger.debug(f"Raster image array has shape {self._raster_images.shape}")
+        logger.debug(f"Target array has shape {self.target.shape}")
 
     def __len__(self):
         return self._len
@@ -423,6 +436,9 @@ class OLATDataset(Dataset):
         feats = self.feats[index]
         target = self.target[index]
         return feats, target
+
+    def is_single_olat(self):
+        return self._is_single_OLAT
 
     def _check_light_name(self, light_name):
         if self._is_single_OLAT:
@@ -468,11 +484,31 @@ class OLATDataset(Dataset):
 
         Returns:
             Dictionary of flattened (only occupied) pixel streams for the frame
+            Binary array indicating which pixels are occupied
         """
         light_name = self._check_light_name(light_name)
         attr_pixels = self._attribute_pixelstreams[frame_number]
         olat_pixels = self._olat_pixelstreams[light_name][frame_number]
-        return attr_pixels | olat_pixels
+        return attr_pixels | olat_pixels, self._occupancy_masks[frame_number]
+
+
+def unpack_item(item, dataset_type):
+    """Method to unpack dataset item. Returns the same signature for all datasets
+
+    Args:
+        item (object): item of a dataset
+        dataset_type (Type[database]): class type of the dataset used
+
+    Returns:
+        Unpacking of the item in either (features, None) or (features, target)
+        depending on if the dataset is supervised or not.
+    """
+    if dataset_type is OLATDataset:
+        # The item is of the form (feats, target)
+        return item
+
+    # if item is jsut the feats without a target, set the target to None
+    return item, None
 
 
 if __name__ == "__main__":

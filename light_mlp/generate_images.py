@@ -110,7 +110,13 @@ def generate_validation_image(model, model_class, valid_dataset):
         gt_shading_image[occupancy_mask] = gt_shading[..., np.newaxis]
 
         # TODO: add error image loss.
-        # heatmap_image = np.concatenate([generate_heatmap_image(model, valid_dataset, image_number, light_name), np.ones(img_size)], axis=0)
+        # heatmap_image = np.concatenate(
+        #     [
+        #         generate_heatmap_image(model, valid_dataset, image_number, light_name),
+        #         np.ones(img_size),
+        #     ],
+        #     axis=0,
+        # )  # noqa: F841
 
         # Stick them together
         validation_images = np.concatenate(
@@ -124,7 +130,8 @@ def generate_validation_image(model, model_class, valid_dataset):
         image_array = np.concatenate([validation_images, gt_images], axis=0)
         # image_array = np.concatenate([image_array, heatmap_image], axis=1)
 
-        image_caption = "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading, Light directions."
+        image_caption = "Top row : Inference. Bottom: GT.\n\
+        Left to right: Render, Shading, Light directions."
 
         return image_array, image_caption
 

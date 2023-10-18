@@ -1,9 +1,11 @@
 import torch
+import torch.utils.data
 
 
 def get_dataloader(full_dataset, batch_size=2**8, split="train", subset_fraction=1):
     "Get a dataloader for training or testing"
 
+    assert isinstance(full_dataset, torch.utils.data.Dataset)
     is_train = split == "train"
 
     if subset_fraction > 1:

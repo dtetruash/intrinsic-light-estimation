@@ -5,29 +5,41 @@ import math
 
 import numpy as np
 import torch
+import torch.autograd.anomaly_mode
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from data_loaders import raster_relight as rr
+from data_loaders import olat_render as ro
+from data_loaders.datasets import (
+    IntrinsicDiffuseDataset,
+    IntrinsicGlobalDataset,
+    IntrinsicDataset,
+    OLATDataset,
+    unpack_item,
+)
 from data_loaders.get_dataloader import get_dataloader
-from data_loaders.datasets import OLATDataset
-from ile_utils.get_device import get_device
+from icecream import ic
 from ile_utils.config import Config
+from ile_utils.get_device import get_device
+from log import get_logger
+from losses.metrics import psnr
 from rich.traceback import install as install_rich
-from sperical_harmonics import spherical_harmonics as sh
 from tqdm import tqdm
+
+from spherical_harmonics import spherical_harmonics as sh
 
 install_rich()
 
 device = get_device()
 config = Config.get_config()
-
+# Each main optimization file should have a logger.
+# TODO: This logget should be passed down to all calls below this one somehow.
+logger = get_logger(__file__)
 rng = np.random.default_rng(882723)
 
+Config.log_config(logger)
 
-# TODO: move this to losses
-def psnr(mse):
-    return -10.0 * math.log10(mse)
+ic.configureOutput(outputFunction=lambda s: logger.info(s))
 
 
 def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
@@ -41,19 +53,24 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
         leave=True,
         colour="red",
     )
-    for batch, (feats, _) in pbar:
+
+    for batch, item in pbar:
+        # Decompose items in dataset
+        feats, _ = unpack_item(item, type(train_dl.dataset))
+
         # Move to device
         feats = feats.to(device)
 
-        # forward pass
-        batch_train_loss, batch_psnr = do_forward_pass(sh_coeff, feats)
-        cumu_loss += batch_train_loss.item()
-        cumu_psnr = batch_psnr
+        with torch.autograd.anomaly_mode.detect_anomaly():
+            # forward pass
+            batch_train_loss, batch_psnr = do_forward_pass(sh_coeff, feats)
+            cumu_loss += batch_train_loss.item()
+            cumu_psnr = batch_psnr
 
-        # Optimization step
-        optimizer.zero_grad()
-        batch_train_loss.backward()
-        optimizer.step()
+            # Optimization step
+            optimizer.zero_grad()
+            batch_train_loss.backward()
+            optimizer.step()
 
         # Collect metrics
         epoch_step = batch + 1 + (n_batches_per_epoch * epoch)
@@ -74,14 +91,31 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
 
 
 # TODO: move this to SH module
-def render_pixel_from_sh(sh_coeff, normals, albedo):
-    shading = sh.render_second_order_SH(sh_coeff, normals)
-    pixel = rr.shade_albedo_torch(albedo, shading)
-    return pixel
+def render_pixel_from_sh(
+    sh_coeff, normals, albedo, torch_mode=True, return_shading=False
+):
+    """Render a pixel color from a second order spherical harmonics basis function
+    normal and albedo at the surface.
+
+    Args:
+        sh_coeff (torch.Tensor or ndarray): second order spherical harmonic coefficients
+        normals (torch.Tensor or ndarray): world normals at each pixel location (N,3)
+        albedo (torch.Tensor or ndarray): albedo at each pixel location (N,3)
+        torch_mode (bool): flag switch to use torch instead of numpy
+
+    Returns:
+        Torch.tensor of rendered pixel colors (clipped to [0..1] in each channel).
+    """
+    lib = torch if torch_mode else np
+    shading = sh.render_second_order_SH(sh_coeff, normals, torch_mode)
+    clipped_shading = lib.clip(shading, 0.0, 1.0)
+    pixel = ro.shade_albedo(albedo, clipped_shading, torch_mode)
+    return (pixel, clipped_shading) if return_shading else pixel
 
 
 def do_forward_pass(sh_coeff, feats):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
+    # FIXME: Check this against the current output of the datasets.
     normals, albedo, gt_rgb = feats.unbind(-1)
     # print(f"normals were {normals.shape}")
     # print(f"albedo were {albedo.shape}")
@@ -89,10 +123,12 @@ def do_forward_pass(sh_coeff, feats):
 
     # render pixel with SH:
     # Do this by computing the shading via the sh code,
-    # and calling the raster render function
+    # and calling the render function
     # NOTE: We should broadcast the coeffs to num of normals here,
     # or hope it will be done automatically.
     pred_rgb = render_pixel_from_sh(sh_coeff, normals, albedo)
+    assert isinstance(pred_rgb, torch.Tensor)
+
     # Compute reconstruction loss:
     train_loss = F.mse_loss(gt_rgb, pred_rgb)
     train_psnr = psnr(train_loss)
@@ -101,71 +137,53 @@ def do_forward_pass(sh_coeff, feats):
 
 
 # TODO: move to image gen
-def generate_validation_image(sh_coeff, valid_dataset):
+def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
     """Generate an image comparing a ground truth image
     with one generated using the model.
     model: MLP which outputs light direction vectors"""
     sh_coeff.requires_grad_(False)
     with torch.inference_mode():
         # Randomly choose which image from the validation set to reconstruct
-        image_number = rng.integers(valid_dataset.num_frames)
-        # randomly choose a light in the scene
-        light_names = list(valid_dataset._lights_info.keys())
-        light_name = light_names[rng.integers(valid_dataset._num_lights)]
-        print(
-            f"Generating OLAT validation image {image_number} \
-            with light {light_name}..."
-        )
+        frame_number = rng.integers(valid_dataset.num_frames)
+
+        # if this is a single light dataset,
+        # NOTE: We need to suply the light when we have only a single OLAT
+        # Dataset, right?
 
         # load attributes of this validation image
-        (
-            W,
-            H,
-            gt_raster_pixels,
-            world_normals,
-            albedo,
-            _,
-            gt_light_vectors,
-            occupancy_mask,
-        ) = valid_dataset.attributes[image_number][light_name]
+        gt_images = valid_dataset.get_frame_images(frame_number)
+        gt_attributes, occupancy_mask = valid_dataset.get_frame_decomposition(
+            frame_number
+        )
 
-        gt_raster_pixels = gt_raster_pixels.astype(np.float32)
-        world_normals = world_normals.astype(np.float32)
-        albedo = albedo.astype(np.float32)
-        gt_light_vectors = gt_light_vectors.astype(np.float32)
-
-        # prepare inputs for inference
-        feats = np.stack([world_normals, albedo, gt_raster_pixels], axis=1)
-        torch.flatten(torch.as_tensor(feats).float(), start_dim=1)
-
-        # Construct a normals image
-        img_size = (W, H, 3)
-
-        val_raster_image = np.ones(img_size, dtype=np.float32)
-        val_light_dir_image = np.ones(img_size, dtype=np.float32)
-        val_shading_image = np.ones(img_size, dtype=np.float32)
+        world_normals = gt_attributes["normal"]
+        albedo = gt_attributes["albedo"]
 
         # Raster pixel image
-        val_shading = sh.render_second_order_SH(sh_coeff, world_normals)
-        val_raster_pixels = rr.shade_albedo(albedo, val_shading)
+        val_raster_pixels, val_shading = render_pixel_from_sh(
+            sh_coeff.numpy(),
+            world_normals,
+            albedo,
+            torch_mode=False,
+            return_shading=True,
+        )
 
-        # raster pixel image
-        val_raster_image[occupancy_mask] = val_raster_pixels
+        assert valid_dataset.dim is not None
+        W, H = valid_dataset.dim
 
-        # Shading images
-        val_shading_image[occupancy_mask] = val_shading[..., np.newaxis]
+        val_shading_image = ro.reconstruct_image(W, H, val_shading, occupancy_mask)
+        val_render_image = ro.reconstruct_image(W, H, val_raster_pixels, occupancy_mask)
 
-        gt_light_dir_image = np.ones(img_size, dtype=np.float32)
-        gt_light_colors = 0.5 * gt_light_vectors + 0.5
-        gt_light_dir_image[occupancy_mask] = gt_light_colors
-
-        gt_raster_image = np.ones(img_size, dtype=np.float32)
-        gt_raster_image[occupancy_mask] = gt_raster_pixels
-
-        gt_shading_image = np.ones(img_size, dtype=np.float32)
-        gt_shading = rr.compute_clipped_dot_prod(world_normals, gt_light_vectors)
-        gt_shading_image[occupancy_mask] = gt_shading[..., np.newaxis]
-
+        ic(
+            val_shading_image.min(),
+            val_shading_image.max(),
+            val_shading_image.dtype,
+        )
+        ic(
+            val_shading_image.min(),
+            val_shading_image.max(),
+            val_shading_image.dtype,
+        )
         # TODO: add error image loss.
         # heatmap_image = np.concatenate(
         #     [
@@ -181,52 +199,89 @@ def generate_validation_image(sh_coeff, valid_dataset):
         # )
 
         # Stick them together
-        validation_images = np.concatenate(
-            [val_raster_image, val_shading_image, val_light_dir_image], axis=1
+        validation_row = np.concatenate([val_render_image, val_shading_image], axis=1)
+
+        logger.debug(f"Image dict has keys: {list(gt_images.keys())}")
+
+        if isinstance(valid_dataset, IntrinsicDiffuseDataset):
+            combined_index = "diffuse"
+        elif isinstance(valid_dataset, IntrinsicGlobalDataset):
+            combined_index = "full"
+        else:
+            # FIXME: Check that this is the correct index
+            combined_index = "image"
+
+        gt_raster_image = ro.remove_alpha(gt_images[combined_index])
+        gt_shading_image = ro.remove_alpha(gt_images["shading"])
+
+        ic(
+            gt_raster_image.min(),
+            gt_raster_image.max(),
+            gt_raster_image.dtype,
         )
 
-        gt_images = np.concatenate(
-            [gt_raster_image, gt_shading_image, gt_light_dir_image], axis=1
+        ic(
+            gt_shading_image.min(),
+            gt_shading_image.max(),
+            gt_shading_image.dtype,
         )
 
-        image_array = np.concatenate([validation_images, gt_images], axis=0)
-        # image_array = np.concatenate([image_array, heatmap_image], axis=1)
+        gt_row = np.concatenate([gt_raster_image, gt_shading_image], axis=1)
 
-        image_caption = "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading, Light directions."
+        image_array = np.concatenate([validation_row, gt_row], axis=0)
+
+        image_caption = "Top row : Inference. Bottom: GT.\n\
+        Left to right: Render, Shading."
 
         return image_array, image_caption
 
 
-def get_dataset():
-    raise NotImplementedError()
-    dataset_option = config.get("sperical_harmonics", "dataset", fallback="intrinsic")
+def get_dataset(config, split="train"):
+    dataset_option = config.get(
+        "spherical_harmonics", "dataset", fallback="intrinsic-global"
+    )
+    logger.debug(f"Dataset option is {type(dataset_option)}:{dataset_option}")
+
     if dataset_option == "single_OLAT":
-        # make dataset which the id of the light to be used.
-        pass
-    elif dataset_option == "intrinsic":
-        pass
+        return OLATDataset(config, split, is_single_olat=True)
+
+    if dataset_option == "intrinsic-global":
+        return IntrinsicGlobalDataset(config, split)
+
+    if dataset_option == "intrinsic-diffuse":
+        return IntrinsicDiffuseDataset(config, split)
+
+    raise ValueError(
+        (
+            f"Dataset option {dataset_option} is unsuported in this optimzation."
+            "Use one of ['single_OLAT', 'intrinsic-diffuse', 'intrinsic-global']."
+        )
+    )
 
 
 def main():
-    config = wandb.config
-    # parse global config
-    epochs = 1
-
     # TODO: Need a way to make this modular w.r.t. which dataset is used.
     # Something like: get_dataset between single OLAT or combined
-    dataset = get_dataset()
     # create the data loader and load the data
     train_dl = get_dataloader(
-        dataset,
-        batch_size=config["batch_size"],
+        get_dataset(config),
+        batch_size=wandb.config["batch_size"],
         subset_fraction=1,
     )
+    assert isinstance(train_dl.dataset, IntrinsicDataset) or isinstance(
+        train_dl.dataset, OLATDataset
+    )  # appease the type checker
+    logger.info(f"Frames: {train_dl.dataset.num_frames}.")
+    logger.info(
+        f"Loaded train dataset with {len(train_dl)}"
+        f" batches and {len(train_dl.dataset)} samples"
+        f" and {train_dl.dataset.num_frames} frames."
+    )
 
-    valid_dataset = OLATDataset(split="val")
-
-    print(
-        f"Loaded train dataset with {len(train_dl)} \
-        batches and {len(train_dl.dataset)} samples."
+    valid_dl = get_dataloader(  # noqa: F841
+        get_dataset(config, split="val"),
+        batch_size=wandb.config["batch_size"],
+        subset_fraction=1,
     )
 
     # TODO: Move this to Models
@@ -238,26 +293,31 @@ def main():
     # Set the coeffs as parameters for optimization
     optimizer = torch.optim.RMSprop([sh_coeff])
 
-    n_batches_per_epoch = math.ceil(len(train_dl.dataset) / config["batch_size"])
+    n_batches_per_epoch = math.ceil(len(train_dl.dataset) / wandb.config["batch_size"])
 
     # for each epoch, for each batch,
     # render the pixel using the normal and the coeficients of the SH,
     # produce the reconstruction loss.
-    for epoch in tqdm(range(config["epochs"]), total=epochs, desc="Epoch"):
+    for epoch in tqdm(
+        range(wandb.config["epochs"]), total=wandb.config["epochs"], desc="Epoch"
+    ):
         # Set coeffs in training mode
         sh_coeff.requires_grad_()
 
         avg_loss, avg_psnr = train_epoch(
             epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch
         )
-        wandb.log({"train/avg_loss": avg_loss, "train/avg_psnr": avg_loss})
+        wandb.log({"train/avg_loss": avg_loss, "train/avg_psnr": avg_psnr})
 
         # TODO: Add validation loop here to eval loss and
         # Render a validation image and log it to wandb
         # FIXME: This produces falty images probably due to uncplipped values
-        val_image_array, image_caption = generate_validation_image(
-            sh_coeff, valid_dataset
+        val_image_array, image_caption = generate_validation_image_from_global_sh(
+            sh_coeff, valid_dl.dataset
         )
+
+        # TODO: Add alert if the images were strage?
+
         val_image = wandb.Image(val_image_array, caption=image_caption)
 
         val_metrics = {"val/images": val_image}
@@ -267,6 +327,10 @@ def main():
 enable_wandb = True
 
 if __name__ == "__main__":
+    wandb.config = {
+        "epochs": 1,
+        "batch_size": 1024,
+    }
     if enable_wandb:
         wandb.login()
 

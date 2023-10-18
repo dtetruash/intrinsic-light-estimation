@@ -3,12 +3,21 @@ to this object to other scopes
 """
 
 import configparser
+import io
 
 
 class Config:
     __conf = None
 
     __config_path = "config.ini"
+
+    @staticmethod
+    def log_config(logger):
+        with io.StringIO() as ss:
+            logger.info("Configuration loaded from file was:")
+            Config.get_config().write(ss)
+            ss.seek(0)  # rewind
+            logger.info(ss.read())
 
     @staticmethod
     def get_config():
@@ -23,12 +32,12 @@ class Config:
             if Config.__conf.has_option("paths", "split"):
                 Config.__conf.set(
                     "paths",
-                    "transforms_fle",
+                    "transforms_file",
                     "%(scene_path)s/transforms_%(split)s.json",
                 )
             else:
                 Config.__conf.set(
-                    "paths", "transforms_fle", "%(scene_path)s/transforms.json"
+                    "paths", "transforms_file", "%(scene_path)s/transforms.json"
                 )
 
             Config.__conf.set(
