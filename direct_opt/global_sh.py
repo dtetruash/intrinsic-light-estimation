@@ -90,6 +90,39 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
     return avg_batch_loss, avg_psnr
 
 
+def validate_model(sh_coeff, valid_dl):
+    """Compute performance of the model on the validation dataset and log a wandb.Table
+
+    Args:
+        sh_coeff (torch.Tensor): tensor of second order spherical harmonics coefficients
+        valid_dl (torch.Dataloader): dataloader of the validation dataset
+
+    Returns:
+        Average validation loss and average PSNR, as floats
+    """
+    val_loss_acc = 0.0
+    val_psnr_acc = 0.0
+    with torch.inference_mode():
+        for item in tqdm(valid_dl, desc="Validating model", total=len(valid_dl)):
+            feats, _ = unpack_item(item, type(valid_dl.dataset))
+
+            feats = feats.to(device)
+            samples_in_batch = feats.size(0)
+
+            # Forward pass
+            val_loss, val_psnr = do_forward_pass(
+                sh_coeff,
+                feats,
+            )
+
+            val_loss_acc += val_loss.item() * samples_in_batch
+            val_psnr_acc += val_psnr * samples_in_batch
+
+    samples_in_set = len(valid_dl.dataset)
+
+    return val_loss_acc / samples_in_set, val_psnr_acc / samples_in_set
+
+
 # TODO: move this to SH module
 def render_pixel_from_sh(
     sh_coeff, normals, albedo, torch_mode=True, return_shading=False
@@ -116,14 +149,10 @@ def render_pixel_from_sh(
 def do_forward_pass(sh_coeff, feats):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
     # FIXME: Check this against the current output of the datasets.
+    # Does not seem like it. So this might cause degeneracy
     normals, albedo, gt_rgb = feats.unbind(-1)
-    # print(f"normals were {normals.shape}")
-    # print(f"albedo were {albedo.shape}")
-    # print(f"gt_rgb were {gt_rgb.shape}")
 
     # render pixel with SH:
-    # Do this by computing the shading via the sh code,
-    # and calling the render function
     # NOTE: We should broadcast the coeffs to num of normals here,
     # or hope it will be done automatically.
     pred_rgb = render_pixel_from_sh(sh_coeff, normals, albedo)
@@ -131,7 +160,7 @@ def do_forward_pass(sh_coeff, feats):
 
     # Compute reconstruction loss:
     train_loss = F.mse_loss(gt_rgb, pred_rgb)
-    train_psnr = psnr(train_loss)
+    train_psnr = psnr(train_loss.item())
 
     return train_loss, train_psnr
 
@@ -211,6 +240,7 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
             # FIXME: Check that this is the correct index
             combined_index = "image"
 
+        # Sould add a background color here
         gt_raster_image = ro.remove_alpha(gt_images[combined_index])
         gt_shading_image = ro.remove_alpha(gt_images["shading"])
 
@@ -260,9 +290,6 @@ def get_dataset(config, split="train"):
 
 
 def main():
-    # TODO: Need a way to make this modular w.r.t. which dataset is used.
-    # Something like: get_dataset between single OLAT or combined
-    # create the data loader and load the data
     train_dl = get_dataloader(
         get_dataset(config),
         batch_size=wandb.config["batch_size"],
@@ -282,6 +309,16 @@ def main():
         get_dataset(config, split="val"),
         batch_size=wandb.config["batch_size"],
         subset_fraction=1,
+    )
+
+    assert isinstance(valid_dl.dataset, IntrinsicDataset) or isinstance(
+        valid_dl.dataset, OLATDataset
+    )  # appease the type checker
+    logger.info(f"Frames: {valid_dl.dataset.num_frames}.")
+    logger.info(
+        f"Loaded valid dataset with {len(train_dl)}"
+        f" batches and {len(valid_dl.dataset)} samples"
+        f" and {valid_dl.dataset.num_frames} frames."
     )
 
     # TODO: Move this to Models
@@ -310,17 +347,21 @@ def main():
         wandb.log({"train/avg_loss": avg_loss, "train/avg_psnr": avg_psnr})
 
         # TODO: Add validation loop here to eval loss and
+        avg_val_loss, avg_val_psnr = validate_model(sh_coeff, valid_dl)
+
         # Render a validation image and log it to wandb
-        # FIXME: This produces falty images probably due to uncplipped values
         val_image_array, image_caption = generate_validation_image_from_global_sh(
             sh_coeff, valid_dl.dataset
         )
 
         # TODO: Add alert if the images were strage?
-
         val_image = wandb.Image(val_image_array, caption=image_caption)
 
-        val_metrics = {"val/images": val_image}
+        val_metrics = {
+            "val/images": val_image,
+            "val/loss": avg_val_loss,
+            "val/psnr": avg_val_psnr,
+        }
         wandb.log(val_metrics)
 
 
