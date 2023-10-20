@@ -1,4 +1,5 @@
 """Methods for rendering pixels via used ligting models"""
+
 import torch
 import math
 import numpy as np
@@ -77,5 +78,6 @@ if __name__ == "__main__":
     normals = torch.nn.functional.normalize(2.0 * torch.rand((B, 3)) - 1.0, dim=-1)
 
     print(
-        f"Rendered shading was {(shading:=render_second_order_SH(coeff, normals))} with shape {shading.shape}"
+        f"Rendered shading was {(shading:=render_second_order_SH(coeff, normals))} with"
+        f" shape {shading.shape}"
     )
