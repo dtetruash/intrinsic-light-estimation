@@ -364,7 +364,8 @@ def main():
 
     # Save the coefficients produced
     coeff_table = wandb.Table(columns=[f"C{i}" for i in range(9)])
-    coeff_table.add_row(sh_coeff.numpy())
+    coeff_table.add_data(*list(sh_coeff.numpy()))
+    wandb.log({"SH Coefficinets": coeff_table})
 
 
 enable_wandb = True
