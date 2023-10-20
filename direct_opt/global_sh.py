@@ -1,6 +1,7 @@
 """Directly optimize the coeficients of a global spherical basis function
 to be able to reproduce global illumination, foregoing an MLP core.
 """
+
 import math
 
 import numpy as np
@@ -11,9 +12,9 @@ import torch.nn.functional as F
 import wandb
 from data_loaders import olat_render as ro
 from data_loaders.datasets import (
+    IntrinsicDataset,
     IntrinsicDiffuseDataset,
     IntrinsicGlobalDataset,
-    IntrinsicDataset,
     OLATDataset,
     unpack_item,
 )
@@ -24,21 +25,19 @@ from ile_utils.get_device import get_device
 from log import get_logger
 from losses.metrics import psnr
 from rich.traceback import install as install_rich
-from tqdm import tqdm
-
 from spherical_harmonics import spherical_harmonics as sh
+from tqdm import tqdm
 
 install_rich()
 
 device = get_device()
 config = Config.get_config()
-# Each main optimization file should have a logger.
-# TODO: This logget should be passed down to all calls below this one somehow.
-logger = get_logger(__file__)
 rng = np.random.default_rng(882723)
 
+logger = get_logger(__file__)
 Config.log_config(logger)
 
+# Amend the icecream printing function to
 ic.configureOutput(outputFunction=lambda s: logger.info(s))
 
 
@@ -260,8 +259,9 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
 
         image_array = np.concatenate([validation_row, gt_row], axis=0)
 
-        image_caption = "Top row : Inference. Bottom: GT.\n\
-        Left to right: Render, Shading."
+        image_caption = (
+            "Top row : Inference. Bottom: GT.\n        Left to right: Render, Shading."
+        )
 
         return image_array, image_caption
 
@@ -282,10 +282,8 @@ def get_dataset(config, split="train"):
         return IntrinsicDiffuseDataset(config, split)
 
     raise ValueError(
-        (
-            f"Dataset option {dataset_option} is unsuported in this optimzation."
-            "Use one of ['single_OLAT', 'intrinsic-diffuse', 'intrinsic-global']."
-        )
+        f"Dataset option {dataset_option} is unsuported in this optimzation."
+        "Use one of ['single_OLAT', 'intrinsic-diffuse', 'intrinsic-global']."
     )
 
 
@@ -363,6 +361,10 @@ def main():
             "val/psnr": avg_val_psnr,
         }
         wandb.log(val_metrics)
+
+    # Save the coefficients produced
+    coeff_table = wandb.Table(columns=[f"C{i}" for i in range(9)])
+    coeff_table.add_row(sh_coeff.numpy())
 
 
 enable_wandb = True
