@@ -149,7 +149,12 @@ def do_forward_pass(sh_coeff, feats):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
     # FIXME: Check this against the current output of the datasets.
     # Does not seem like it. So this might cause degeneracy
-    normals, albedo, gt_rgb = feats.unbind(-1)
+
+    # ic(type(feats), feats.shape)
+    gt_rgb, albedo, _, normals = feats.unbind(-2)
+    # ic(type(normals), normals.shape)
+    # ic(type(albedo), albedo.shape)
+    # ic(type(gt_rgb), gt_rgb.shape)
 
     # render pixel with SH:
     # NOTE: We should broadcast the coeffs to num of normals here,
