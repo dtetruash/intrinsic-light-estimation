@@ -1,7 +1,6 @@
 """Set global logger settings
 """
 
-
 import os
 import logging
 from ile_utils.config import Config
@@ -38,7 +37,13 @@ def get_logger(file_path):
     file_handler.setFormatter(formatter)
 
     logger = logging.getLogger(file_name)
-    logger.setLevel(logging.DEBUG)
+    LEVEL = config.get("logging", "level", fallback=10)
+    if LEVEL % 10 != 0:
+        raise ValueError(
+            f"Logging level option '{LEVEL}' set to non multiple of 10. See"
+            " logging.Levels docs."
+        )
+    logger.setLevel(LEVEL)
 
     while logger.hasHandlers():
         logger.removeHandler(logger.handlers[0])
