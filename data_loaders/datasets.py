@@ -14,7 +14,6 @@ from ile_utils.config import Config
 from log import get_logger
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from icecream import ic
 
 logger = get_logger(__file__)
 
@@ -138,6 +137,7 @@ class IntrinsicDataset(Dataset):
         # Get image transforms_file
         frame_transforms, downsample_ratio = gather_image_metadata(config)
         self.num_frames = len(frame_transforms["frames"])
+        self.frame_transforms = frame_transforms
         logger.info(f"Transform file lists {self.num_frames} frames to load.")
         #
         # 2. Scene images
@@ -185,6 +185,15 @@ class IntrinsicDataset(Dataset):
                 if image_channel == "depth":
                     continue
                 pixel_stream = image2stream(image, occupancy_mask)
+
+                if image_channel == "normal":
+                    # transform pixles carrying normal information to vectors
+                    c2w = ro.get_c2w(frame_number, frame_transforms)
+                    world_normals = ro.get_world_space_normals_from_pixels(
+                        pixel_stream, c2w
+                    )
+                    pixel_stream = world_normals
+
                 pixel_streams[image_channel].append(pixel_stream)
 
         # Save the indexes of start and end of each of the frames by pixel number
@@ -471,6 +480,7 @@ class OLATDataset(Dataset):
 
         return light_name
 
+    # FIXME: Change to confirm to the IntDataset interface: Tuple instead of Dict
     def get_frame_images(self, frame_number, light_name=None):
         """Get the loaded frame's channels by its number and the light used
         to render them.
@@ -489,6 +499,7 @@ class OLATDataset(Dataset):
 
         return frame_olat | frame_attrs
 
+    # FIXME: Change to confirm to the IntDataset interface: Tuple instead of Dict
     def get_frame_decomposition(self, frame_number, light_name=None):
         """Get the loaded frame's channels as flattened data streams. Useful
         for recombining with infered intrinsic attributes like lighting.
@@ -528,26 +539,32 @@ def unpack_item(item, dataset_type):
 
 
 if __name__ == "__main__":
+    # Render relavant channels from the dataset from both the __gettiem__
+    # and the stored frames
+
     config = Config.get_config()
     ds = IntrinsicGlobalDataset(config, split="val")
     print(f"Loaded dataset has {len(ds)} samples.")
 
     frame_num = np.random.random_integers(ds.num_frames)
     print(f"Showing data from frame {frame_num}")
-    pixel_streams, occupancy = ds.get_frame_decomposition(frame_num)
-    img_pixels, albedo, shading, normal = pixel_streams
+    attibute_streams, occupancy = ds.get_frame_decomposition(frame_num)
+    img_pixels, albedo, shading, normal = attibute_streams
+
+    assert ds.dim is not None
     W, H = ds.dim
-    ic(img_pixels.shape, img_pixels.min(), img_pixels.max(), img_pixels.dtype)
-    ic(albedo.shape, albedo.min(), albedo.max(), albedo.dtype)
-    ic(shading.shape, shading.min(), shading.max(), shading.dtype)
-    ic(normal.shape, normal.min(), normal.max(), normal.dtype)
 
     from matplotlib import pyplot as plt
 
     fig = plt.figure()
     fig.suptitle(f"Image channels of frame {frame_num} from streams")
-    for i, stream in enumerate(pixel_streams):
+    for i, stream in enumerate(attibute_streams):
         fig.add_subplot(2, 2, i + 1)
+        if i == 3:
+            # compute normal pixles from stream
+            c2w = ro.get_c2w(frame_num, ds.frame_transforms)
+            stream = ro.get_pixels_from_world_normals(stream, c2w)
+            normal_pixels = stream
         image = ro.reconstruct_image(W, H, stream, occupancy)
         plt.imshow(image)
 

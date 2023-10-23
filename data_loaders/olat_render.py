@@ -51,8 +51,8 @@ def remove_alpha(image_array):
         return image_array[..., :-1]
     else:
         raise ValueError(
-            f"Given image array has unexpected number of dimensions \
-        along the final axis. Was {image_array.shape[-1]} and expected 4."
+            "Given image array has unexpected number of dimensions         along the"
+            f" final axis. Was {image_array.shape[-1]} and expected 4."
         )
 
 
@@ -90,37 +90,31 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
 
     # Compute Camera Parameters
     intrinsics, c2w = get_camera_parameters(W, H, frame_number, frame_transforms)
-    R = to_rotation(c2w)
 
     # Albdo
     albedo = remove_alpha(images["albedo"])
-    logger.debug(
-        f"Albedo range \
-        from {albedo.min()} to {albedo.max()}"
-    )
+    logger.debug(f"Albedo range from {albedo.min()} to {albedo.max()}")
 
     # Normal
     normal_pixels = remove_alpha(images["normal"])
     logger.debug(
-        f"Normal pixels range \
-        from {normal_pixels.min()} to {normal_pixels.max()}"
+        f"Normal pixels range from {normal_pixels.min()} to {normal_pixels.max()}"
     )
-    camera_normals = get_camera_space_normals_from_pixels(normal_pixels)
-    world_normals = to_world_space_normals(camera_normals, R)
+    world_normals = get_world_space_normals_from_pixels(normal_pixels, c2w)
 
     # get only the alpha from the depth image
     depth_alpha = images["depth"][..., -1]  # This would be an array in [0,255]
     logger.debug(
-        f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()} \
-        with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }"
+        f"Got depth_alpha from {depth_alpha.min()} to {depth_alpha.max()}"
+        f" with mean of {depth_alpha.mean()}. The datatype is { depth_alpha.dtype }"
     )
 
     # invert the depth image to be black -> white as depth increases
     depth_remapped, depth_normalization_constant = remap_depth_black2white(depth_alpha)
     logger.debug(
-        f"Ater remapping got depth_remapped from {depth_remapped.min()} \
-        to {depth_remapped.max()} with mean of {depth_remapped.mean()}. \
-        The datatype is { depth_remapped.dtype }"
+        f"Ater remapping got depth_remapped from {depth_remapped.min()}"
+        f" to {depth_remapped.max()} with mean of {depth_remapped.mean()}."
+        f" The datatype is { depth_remapped.dtype }"
     )
 
     # read-in parameters for RGBD image creation
@@ -129,16 +123,16 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
         depth_scale = config.get("parameters", "depth_scale")
         depth_trunc = config.get("parameters", "depth_trunc")
         logger.info(
-            f"Read-in depth_scale {depth_scale} and \
-            depth_trunc {depth_trunc} from config."
+            f"Read-in depth_scale {depth_scale} and"
+            f" depth_trunc {depth_trunc} from config."
         )
     except NoOptionError:
         depth_scale = 1 / 8
         depth_trunc = 8.0
         logger.warning(
-            f"Parameter options depth_scale and depth_trunc not set in config!\n\
-            Using defaults {depth_scale} and {depth_trunc} respectively. \
-            These might not be correct for the depth maps used, so do check."
+            "Parameter options depth_scale and depth_trunc not set in config!\n"
+            f"Using defaults {depth_scale} and {depth_trunc} respectively."
+            " These might not be correct for the depth maps used, so do check."
         )
 
     # Make RGBD image intput
@@ -154,9 +148,9 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
     # Normalize depth to [0,1] after the rgbd image is created
     depth_normalized = depth_remapped / depth_normalization_constant
     logger.debug(
-        f"After normalizing got depth_normalized from {depth_normalized.min()} \
-        to {depth_normalized.max()} with mean of {depth_normalized.mean()}. \
-        The datatype is { depth_normalized.dtype }"
+        f"After normalizing got depth_normalized from {depth_normalized.min()}        "
+        f" to {depth_normalized.max()} with mean of {depth_normalized.mean()}.        "
+        f" The datatype is { depth_normalized.dtype }"
     )
 
     # create the posed point cloud
@@ -165,8 +159,8 @@ def gather_intrinsic_components(frame_number, frame_transforms, downsample_ratio
     # get image occupancy
     occupancy_mask = get_occupancy(depth_alpha)
     logger.debug(
-        f"Occumpancy mask of shape {occupancy_mask.shape}, \
-        and with {occupancy_mask.sum()} occupied pixels."
+        f"Occumpancy mask of shape {occupancy_mask.shape},         and with"
+        f" {occupancy_mask.sum()} occupied pixels."
     )
 
     return (
@@ -187,8 +181,8 @@ def remap_depth_black2white(depth_array):
     bit_depth = 8 if depth_array.dtype == np.uint8 else 16
     max_value = 2**bit_depth - 1
     logger.debug(
-        f"Bit depth used for depth remapping was {bit_depth} \
-        and a max values of {max_value}"
+        f"Bit depth used for depth remapping was {bit_depth}         and a max values of"
+        f" {max_value}"
     )
     return -depth_array + max_value, max_value
 
@@ -264,15 +258,15 @@ def project_and_pose_3d_points_via_rgbd(
 def check_rotation(R):
     # Check the rotation matrix
     det_R = np.linalg.det(R)
-    logger.info(f"det(R) = {det_R}")
-    assert (
-        np.abs(det_R - 1.0) < 1e-5
-    ), f"Rotation check failed. Expected rotation matrix determinant to be 1, \
-    and was {det_R}."
+    logger.debug(f"det(R) = {det_R}")
+    assert np.abs(det_R - 1.0) < 1e-5, (
+        "Rotation check failed. Expected rotation matrix determinant to be 1,     and"
+        f" was {det_R}."
+    )
 
     Rt_R = R.T @ R
-    logger.info("R^T @ R = ")
-    logger.info(Rt_R)
+    logger.debug("R^T @ R = ")
+    logger.debug(Rt_R)
     assert np.all(
         np.abs(Rt_R - np.eye(3)) < 1e-5
     ), "Rotation check failed. Rotation matrix was not orthonormal."
@@ -282,28 +276,34 @@ def get_camera_space_normals_from_pixels(
     camera_normal_pixels, shift=np.array([-0.5] * 3), scale=np.array([2.0] * 3)
 ):
     """
-    camera_normal_pixels : ndarray (N,3) of normals encoded as pixel values
+    Computes normalized normal vectors in camera-space from normalized pixel values.
+
+    camera_normal_pixels : ndarray (N,3) of camera-space normals encoded as pixel values in [0..1]
+
+    Returns:
+        Normalized R^3 normal vectors in camera-space.
     """
     # ### Load camera-space normals and scale them to the correct ranges
-    if camera_normal_pixels.dtype == np.uint8:
-        color_depth = 8
-    elif camera_normal_pixels.dtype == np.uint16:
-        color_depth = 16
-    else:
+    if camera_normal_pixels.dtype != np.float32:
         raise ValueError(
-            f"The datatype of given camera normal pixel vaues \
-            is {camera_normal_pixels.dtype}. Only uint8 and uint16 are supported."
+            "The datatype of given camera normal pixel vaues"
+            f" is {camera_normal_pixels.dtype}. Only np.float32 supported."
         )
-
-    logger.info(f"Normals were loaded using a color depth of {color_depth}.")
-
-    camera_normals_pixels_normalized = camera_normal_pixels / (
-        2**color_depth - 1
-    )  # [0,1]
+    if camera_normal_pixels.shape[-1] != 3:
+        raise ValueError(
+            "Last axis of camera_normal_pixels must be 3 (RGB)."
+            f" Was {camera_normal_pixels.shape[-1]}."
+        )
+    if camera_normal_pixels.max() > 1.0 or camera_normal_pixels.min() < 0.0:
+        raise ValueError(
+            "The given camera normal pixel values are not normalized.\n"
+            "Expected values between 0.0 and 1.0, got values between"
+            f" {camera_normal_pixels.min()} and {camera_normal_pixels.max()}."
+        )
 
     # Translation and scaling needed to remap to [-1,1], [-1,1], and [-1,0] resp.
     # (doing it like this for debug reasons)
-    camera_normals = (camera_normals_pixels_normalized + shift) * scale
+    camera_normals = (camera_normal_pixels + shift) * scale
 
     # Normalize the normals and zero non-occupied ones.
     camera_normals_norms = np.linalg.norm(camera_normals, axis=-1)
@@ -324,11 +324,61 @@ def to_world_space_normals(camera_normals, R):
     # Reshape the transformed vectors back to the original image shape
     world_normals = world_normals.T.reshape(camera_normals.shape)
     logger.debug(
-        f"world_normals shape after reshaping to \
-            camera_normals.shape: {world_normals.shape}"
+        "world_normals shape after reshaping to camera_normals.shape:"
+        f" {world_normals.shape}"
     )
 
     return world_normals
+
+
+def to_camera_space_normals(world_normals, R):
+    """
+    world_normals: ndarray (N,3) normalized normal vectors in camera-space
+    Transform camera-space normals in inhomogeneous coordinates
+    """
+    camera_normals = np.dot(R.T, world_normals.T)
+
+    # Reshape the transformed vectors back to the original image shape
+    camera_normals = camera_normals.T.reshape(world_normals.shape)
+
+    return camera_normals
+
+
+def get_world_space_normals_from_pixels(camera_normal_pixels, c2w):
+    """Transform normalized pixels carrying normal information in camera-space in [0..1]
+    to world-space normal vectors.
+
+    Args:
+        camera_normal_pixels (ndarray): array of RGB pixels carrying normal vector information
+        c2w (ndarray): camera to world transform calibrated for above pixels
+
+    Returns:
+        NDArray of world normals computed from the pixels and the transform.
+    """
+    camera_normals = get_camera_space_normals_from_pixels(camera_normal_pixels)
+
+    R = to_rotation(c2w)
+    check_rotation(R)
+
+    world_normals = to_world_space_normals(camera_normals, R)
+
+    return world_normals
+
+
+def get_pixels_from_world_normals(world_normals, c2w):
+    R = to_rotation(c2w)
+    check_rotation(R)
+
+    camera_normals = to_camera_space_normals(world_normals, R)
+
+    pixels = get_pixels_from_camera_space_normals(camera_normals)
+    return pixels.astype(np.float32)
+
+
+def get_pixels_from_camera_space_normals(camera_normals):
+    shift = np.array([1] * 3)
+    scale = np.array([2.0] * 3)
+    return (camera_normals + shift) / scale
 
 
 def compute_light_vectors(posed_points, light_location):
@@ -337,8 +387,8 @@ def compute_light_vectors(posed_points, light_location):
     # a[occupied_mask].shape == posed_points.shape
     light_vectors = light_location - posed_points
     logger.debug(
-        f"shapes: l_v:{light_vectors.shape}, l_l : {light_location.shape}, \
-            p_p : {posed_points.shape}"
+        f"shapes: l_v:{light_vectors.shape}, l_l : {light_location.shape}, "
+        f" p_p : {posed_points.shape}"
     )
 
     # Get norms of the light vectors
@@ -358,10 +408,10 @@ def compute_viewing_vectors(posed_points, camera_center):
 
 
 def compute_clipped_dot_prod(vecs_1, vecs_2):
-    assert (
-        vecs_1.shape == vecs_2.shape
-    ), f"Clipped dot prod.: Invalid inputs do not have identical shapes. \
-        Were {vecs_1.shape} and {vecs_2.shape}"
+    assert vecs_1.shape == vecs_2.shape, (
+        "Clipped dot prod.: Invalid inputs do not have identical shapes. Were"
+        f" {vecs_1.shape} and {vecs_2.shape}"
+    )
     # Compute max(n dot l,0) i.e., shading
     dot = np.sum(vecs_2.reshape((-1, 3)) * vecs_1.reshape((-1, 3)), axis=-1)
 
@@ -369,10 +419,10 @@ def compute_clipped_dot_prod(vecs_1, vecs_2):
 
 
 def compute_clipped_dot_prod_torch(vecs_1, vecs_2):
-    assert (
-        vecs_1.shape == vecs_2.shape
-    ), f"Clipped dot prod.: Invalid inputs do not have identical shapes. \
-        Were {vecs_1.shape} and {vecs_2.shape}"
+    assert vecs_1.shape == vecs_2.shape, (
+        "Clipped dot prod.: Invalid inputs do not have identical shapes. Were"
+        f" {vecs_1.shape} and {vecs_2.shape}"
+    )
     # Compute max(n dot l,0) i.e., shading
     dot = torch.sum(vecs_2.reshape((-1, 3)) * vecs_1.reshape((-1, 3)), dim=-1)
 
@@ -431,14 +481,14 @@ def render_OLAT_pixelstream(
         Returned in this order.
     """
     # shapes
-    assert (
-        world_normals.shape == albedo.shape
-    ), f"Compute raster failed. World normals and albedo shape mismatch. \
-        Were {world_normals.shape} and {albedo.shape}."
+    assert world_normals.shape == albedo.shape, (
+        "Compute raster failed. World normals and albedo shape mismatch. Were"
+        f" {world_normals.shape} and {albedo.shape}."
+    )
 
     logger.debug(
-        f"In compute_OLAT_pixelstream: posed_points - {posed_points.shape}, \
-        light_location: {light_location.shape}"
+        f"In compute_OLAT_pixelstream: posed_points - {posed_points.shape},"
+        f" light_location: {light_location.shape}"
     )
 
     light_vectors, light_vector_norms_sqr = compute_light_vectors(
@@ -449,16 +499,16 @@ def render_OLAT_pixelstream(
     render = shade_albedo(albedo, shading)
 
     logger.debug(
-        f"in raster: albedo type is {albedo.dtype} and range \
-        in [{albedo.min(), albedo.max()}]"
+        f"in raster: albedo type is {albedo.dtype} and range in"
+        f" [{albedo.min(), albedo.max()}]"
     )
     logger.debug(
-        f"in raster: shading type is {shading.dtype} and range \
-        in [{shading.min(), shading.max()}]"
+        f"in raster: shading type is {shading.dtype} and range in"
+        f" [{shading.min(), shading.max()}]"
     )
     logger.debug(
-        f"in raster: raster type is {render.dtype} and range \
-        in [{render.min(), render.max()}]"
+        f"in raster: raster type is {render.dtype} and range in"
+        f" [{render.min(), render.max()}]"
     )
 
     ret = [render]
@@ -499,8 +549,8 @@ def get_occupancy(depth_image):
         depth_alpha = depth_image
     else:
         raise ValueError(
-            "Depth image of incompatible shape. Must be RGB(A) with 3 dimensions, \
-            or grayscale/alpha with 2."
+            "Depth image of incompatible shape. Must be RGB(A) with 3 dimensions,"
+            "or grayscale/alpha with 2."
         )
 
     return depth_alpha > 0.0
@@ -537,6 +587,7 @@ def reconstruct_image(W, H, pixels, occupancy, add_alpha=False):
 
     if add_alpha:
         image_container[..., -1] = occupancy.astype(np.float32)
+
     return image_container
 
 
@@ -569,8 +620,8 @@ def create_OLAT_samples_for_frame():
     with open(lights_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
     logger.info(
-        f"Loaded {lights_file_path}. \
-        Number of lights is {len(lights_info['lights'])}"
+        f"Loaded {lights_file_path}.         Number of lights is"
+        f" {len(lights_info['lights'])}"
     )
 
     light_transforms = {
@@ -578,8 +629,7 @@ def create_OLAT_samples_for_frame():
         for light in lights_info["lights"]
     }
     light_locations = {
-        name: to_translation(transform)
-        for (name, transform) in light_transforms.items()
+        name: to_translation(transform) for (name, transform) in light_transforms.items()
     }
 
     output_OLATs = [

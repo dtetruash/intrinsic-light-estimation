@@ -5,7 +5,6 @@ format for further processing.
 
 from log import get_logger
 
-from icecream import ic
 import cv2
 import numpy as np
 from PIL import Image
@@ -153,7 +152,7 @@ def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio
             downsampled_images[channel] = resample_image(image, W, H)
         images = downsampled_images
 
-    for channel, image in images.items():
-        ic(channel, image.dtype, image.min(), image.max(), image.shape)
+    # for channel, image in images.items():
+    #     ic(channel, image.dtype, image.min(), image.max(), image.shape)
 
     return W, H, images
