@@ -3,7 +3,6 @@ Currently, this dataloader loads all the relevant data, and then computes a stre
 of point-lit pixels without shadowing lit from a single light in the scene.
 """
 
-
 import json
 from configparser import NoOptionError
 
@@ -15,6 +14,7 @@ from ile_utils.config import Config
 from log import get_logger
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from icecream import ic
 
 logger = get_logger(__file__)
 
@@ -36,8 +36,8 @@ def _get_light_info(config, is_single_olat=False):
         lights_info = json.loads(lf.read())
 
     logger.info(
-        f"OLAT dataset: get_lights_info: Loaded {light_file_path}. \
-        Number of lights is {len(lights_info['lights'])}"
+        f"OLAT dataset: get_lights_info: Loaded {light_file_path}. Number of"
+        f" lights is {len(lights_info['lights'])}"
     )
 
     def get_location(light):
@@ -55,8 +55,9 @@ def _get_light_info(config, is_single_olat=False):
             single_olat_light = config.get("lighting", "single_olat_light").lower()
         except NoOptionError:
             raise ValueError(
-                "If the 'single_olat' dataset option is set, \
-            the specification the 'single_olat_light' option is required in the config."
+                "If the 'single_olat' dataset option is set, the"
+                " specification the 'single_olat_light' option is required in the"
+                " config."
             )
         light_locations = {single_olat_light: light_locations[single_olat_light]}
 
@@ -148,6 +149,7 @@ class IntrinsicDataset(Dataset):
         self.dim = None
 
         # for each frame in the split
+        stream_idxs = [0]
         frames = []
         pixel_streams = {channel_name: [] for channel_name in channels}
         occupancy_masks = []
@@ -169,12 +171,13 @@ class IntrinsicDataset(Dataset):
             if self.dim is None:
                 self.dim = W, H
 
-            # Save the dist for visualization use later.
-            frames.append(images)
+            # Save the tuple of images for visualization use later.
+            frames.append(tuple(images[channel] for channel in channels))
 
             # for each channel, extract the occupied pixels and place them in the stream
             occupancy_mask = ro.get_occupancy(images["depth"])
             occupancy_masks.append(occupancy_mask)
+            stream_idxs.append(occupancy_mask.sum() + stream_idxs[-1])
 
             for image_channel, image in images.items():
                 # NOTE: We might want the depth buffer later on. Could include
@@ -183,6 +186,9 @@ class IntrinsicDataset(Dataset):
                     continue
                 pixel_stream = image2stream(image, occupancy_mask)
                 pixel_streams[image_channel].append(pixel_stream)
+
+        # Save the indexes of start and end of each of the frames by pixel number
+        self._stream_idxs = stream_idxs
 
         # Concatenate all pixel streams and form the feature tensor
         # combine loaded steams in the order given by the channels input
@@ -196,7 +202,6 @@ class IntrinsicDataset(Dataset):
 
         # Tracking for documentation and meta-data
         self.chanels = channels
-        self._decompositions = pixel_streams
         self._frames = frames
         # List of arrays
         self._occupancy_masks = occupancy_masks
@@ -207,6 +212,17 @@ class IntrinsicDataset(Dataset):
     def __len__(self):
         return self._feats.shape[0]
 
+    def unpack_item_batch(self, item_batch):
+        """Unpack the feature tensor along he feature dimension.
+
+        Args:
+            item_batch (torch.Tensor): a slice of the feature tensor of this dataset
+
+        Returns:
+            Tuple of pixel streams in order of given channels (image, albedo, shading, normal)
+        """
+        return item_batch.unbind(-2)
+
     def get_frame_images(self, frame_number):
         """Get the loaded frame's channels by its number.
 
@@ -214,7 +230,7 @@ class IntrinsicDataset(Dataset):
         frame_number (int): number of the frame whose image dict to get
 
         Returns:
-            Dictionary of unaltered image channels of the frame
+            Tuple of unaltered image channels of the frame in order of given channels
         """
         return self._frames[frame_number]
 
@@ -226,13 +242,16 @@ class IntrinsicDataset(Dataset):
             frame_number (int): number of the frame whose stream dict to get
 
         Returns:
-            Dictionary of flattened (only occupied) pixel streams for the frame,
-            Binary array indicating which pixels are occupied
+            Tuple of flattened (only occupied) pixel streams for the frame
+            (in order of given channels), and Binary array indicating which pixels are occupied
         """
-        return {
-            channel: stream_list[frame_number]
-            for channel, stream_list in self._decompositions.items()
-        }, self._occupancy_masks[frame_number]
+        # Get the appropriate slice of the feats vector,
+        # and unbind on the feature dimension
+        feats_slice = self._feats[
+            self._stream_idxs[frame_number] : self._stream_idxs[frame_number + 1]
+        ]
+
+        return self.unpack_item_batch(feats_slice), self._occupancy_masks[frame_number]
 
 
 class IntrinsicGlobalDataset(IntrinsicDataset):
@@ -385,13 +404,10 @@ class OLATDataset(Dataset):
             # save output
             added_samples = num_samples_per_light * self._num_lights
             logger.info(
-                f"Appending {num_samples_per_light} samples \
-                from image {frame_number} per light."
+                f"Appending {num_samples_per_light} samples from image"
+                f" {frame_number} per light."
             )
-            logger.info(
-                f"Appending {added_samples} samples \
-                from image {frame_number}."
-            )
+            logger.info(f"Appending {added_samples} samples from image {frame_number}.")
 
             # append to list, we will concat later
             world_normals_list += [world_normals] * self._num_lights
@@ -402,8 +418,8 @@ class OLATDataset(Dataset):
             self._len += added_samples
 
             logger.info(
-                f"New number of samples \
-                after loading image {frame_number} is {self._len}"
+                "New number of samples after loading image"
+                f" {frame_number} is {self._len}"
             )
 
         # concat the outputs and make them tensors
@@ -444,8 +460,8 @@ class OLATDataset(Dataset):
         if self._is_single_OLAT:
             if light_name is not None:
                 raise ValueError(
-                    "A single OLAT sample dataset does not contain \
-                    light name information. Call with light_name=None"
+                    "A single OLAT sample dataset does not contain"
+                    " light name information. Call with light_name=None"
                 )
             light_name = list(self._lights_info.keys())[0]
 
@@ -512,8 +528,35 @@ def unpack_item(item, dataset_type):
 
 
 if __name__ == "__main__":
-    # TODO: Test by creating all datasets, and reconstructing a random frame from it
-    # via the stream and via the loaded frames themselves?
     config = Config.get_config()
-    ds = OLATDataset(config)
+    ds = IntrinsicGlobalDataset(config, split="val")
     print(f"Loaded dataset has {len(ds)} samples.")
+
+    frame_num = np.random.random_integers(ds.num_frames)
+    print(f"Showing data from frame {frame_num}")
+    pixel_streams, occupancy = ds.get_frame_decomposition(frame_num)
+    img_pixels, albedo, shading, normal = pixel_streams
+    W, H = ds.dim
+    ic(img_pixels.shape, img_pixels.min(), img_pixels.max(), img_pixels.dtype)
+    ic(albedo.shape, albedo.min(), albedo.max(), albedo.dtype)
+    ic(shading.shape, shading.min(), shading.max(), shading.dtype)
+    ic(normal.shape, normal.min(), normal.max(), normal.dtype)
+
+    from matplotlib import pyplot as plt
+
+    fig = plt.figure()
+    fig.suptitle(f"Image channels of frame {frame_num} from streams")
+    for i, stream in enumerate(pixel_streams):
+        fig.add_subplot(2, 2, i + 1)
+        image = ro.reconstruct_image(W, H, stream, occupancy)
+        plt.imshow(image)
+
+    plt.show()
+
+    images = ds.get_frame_images(frame_num)
+    fig = plt.figure()
+    fig.suptitle(f"Image channels of frame {frame_num} from images")
+    for i in range(4):
+        fig.add_subplot(2, 2, i + 1)
+        plt.imshow(images[i])
+    plt.show()
