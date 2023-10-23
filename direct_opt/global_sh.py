@@ -179,24 +179,18 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
         # Randomly choose which image from the validation set to reconstruct
         frame_number = rng.integers(valid_dataset.num_frames)
 
-        # if this is a single light dataset,
-        # NOTE: We need to suply the light when we have only a single OLAT
-        # Dataset, right?
-
+        # Make top row of infered images
         # load attributes of this validation image
-        gt_images = valid_dataset.get_frame_images(frame_number)
         gt_attributes, occupancy_mask = valid_dataset.get_frame_decomposition(
             frame_number
         )
 
-        world_normals = gt_attributes["normal"]
-        albedo = gt_attributes["albedo"]
+        _, albedo, _, world_normals = gt_attributes
 
-        # Raster pixel image
         val_render_pixels, val_shading = render_pixel_from_sh(
             sh_coeff.numpy(),
-            world_normals,
-            albedo,
+            world_normals.numpy(),
+            albedo.numpy(),
             torch_mode=False,
             return_shading=True,
         )
@@ -206,54 +200,39 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
 
-        val_shading_image = ro.reconstruct_image(W, H, val_shading, occupancy_mask)
-        val_render_image = ro.reconstruct_image(W, H, val_render_pixels, occupancy_mask)
+        val_render_image = ro.reconstruct_image(
+            W, H, val_render_pixels, occupancy_mask, add_alpha=True
+        )
+
+        val_shading_image = ro.reconstruct_image(
+            W, H, val_shading, occupancy_mask, add_alpha=True
+        )
 
         ic(
-            val_shading_image.min(),
-            val_shading_image.max(),
-            val_shading_image.dtype,
+            val_render_image.min(),
+            val_render_image.max(),
+            val_render_image.dtype,
+            val_render_image.shape,
         )
         ic(
             val_shading_image.min(),
             val_shading_image.max(),
             val_shading_image.dtype,
+            val_shading_image.shape,
         )
-        # TODO: add error image loss.
-        # heatmap_image = np.concatenate(
-        #     [
-        #         generate_heatmap_image(
-        #            model,
-        #            valid_dataset,
-        #            image_number,
-        #            light_name
-        #         ),
-        #         np.ones(img_size),
-        #     ],
-        #     axis=0,
-        # )
 
         # Stick them together
         validation_row = np.concatenate([val_render_image, val_shading_image], axis=1)
 
-        logger.debug(f"Image dict has keys: {list(gt_images.keys())}")
-
-        if isinstance(valid_dataset, IntrinsicDiffuseDataset):
-            combined_index = "diffuse"
-        elif isinstance(valid_dataset, IntrinsicGlobalDataset):
-            combined_index = "full"
-        else:
-            # FIXME: Check that this is the correct index
-            combined_index = "image"
-
-        # Sould add a background color here
-        gt_raster_image = ro.remove_alpha(gt_images[combined_index])
-        gt_shading_image = ro.remove_alpha(gt_images["shading"])
+        # Make bottom row of gt images
+        gt_render_image, _, gt_shading_image, _ = valid_dataset.get_frame_images(
+            frame_number
+        )
 
         ic(
-            gt_raster_image.min(),
-            gt_raster_image.max(),
-            gt_raster_image.dtype,
+            gt_render_image.min(),
+            gt_render_image.max(),
+            gt_render_image.dtype,
         )
 
         ic(
@@ -262,12 +241,12 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
             gt_shading_image.dtype,
         )
 
-        gt_row = np.concatenate([gt_raster_image, gt_shading_image], axis=1)
+        gt_row = np.concatenate([gt_render_image, gt_shading_image], axis=1)
 
         image_array = np.concatenate([validation_row, gt_row], axis=0)
 
         image_caption = (
-            "Top row : Inference. Bottom: GT.\n        Left to right: Render, Shading."
+            "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading."
         )
 
         return image_array, image_caption
