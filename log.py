@@ -37,7 +37,7 @@ def get_logger(file_path):
     file_handler.setFormatter(formatter)
 
     logger = logging.getLogger(file_name)
-    LEVEL = config.get("logging", "level", fallback=10)
+    LEVEL = config.getint("logging", "level", fallback=10)
     if LEVEL % 10 != 0:
         raise ValueError(
             f"Logging level option '{LEVEL}' set to non multiple of 10. See"
