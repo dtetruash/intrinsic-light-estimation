@@ -193,7 +193,7 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
         albedo = gt_attributes["albedo"]
 
         # Raster pixel image
-        val_raster_pixels, val_shading = render_pixel_from_sh(
+        val_render_pixels, val_shading = render_pixel_from_sh(
             sh_coeff.numpy(),
             world_normals,
             albedo,
@@ -201,11 +201,13 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
             return_shading=True,
         )
 
+        ic(val_render_pixels.dtype, val_shading.dtype)
+
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
 
         val_shading_image = ro.reconstruct_image(W, H, val_shading, occupancy_mask)
-        val_render_image = ro.reconstruct_image(W, H, val_raster_pixels, occupancy_mask)
+        val_render_image = ro.reconstruct_image(W, H, val_render_pixels, occupancy_mask)
 
         ic(
             val_shading_image.min(),
