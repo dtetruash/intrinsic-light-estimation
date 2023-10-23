@@ -118,13 +118,13 @@ def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio
             if channel in ["normal"]:
                 image = read_16bit(path)
             else:
-                image = np.asarray(Image.open(path)) / 255.0
+                image = np.asarray(Image.open(path))
 
-            images[channel] = image
+            images[channel] = image / 255.0
         except ValueError:
             print(
-                f"The necessary image channel pass '{channel}' \
-                for image '{frame_number}' was not found at expeced location {path}"
+                f"The necessary image channel pass '{channel}' for image"
+                f" '{frame_number}' was not found at expeced location {path}"
             )
             raise
 
