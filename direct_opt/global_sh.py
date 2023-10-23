@@ -62,7 +62,9 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
 
         with torch.autograd.anomaly_mode.detect_anomaly():
             # forward pass
-            batch_train_loss, batch_psnr = do_forward_pass(sh_coeff, feats)
+            batch_train_loss, batch_psnr = do_forward_pass(
+                sh_coeff, feats, train_dl.dataset
+            )
             cumu_loss += batch_train_loss.item()
             cumu_psnr = batch_psnr
 
@@ -139,7 +141,7 @@ def render_pixel_from_sh(
     shading = sh.render_second_order_SH(sh_coeff, normals, torch_mode)
     clipped_shading = lib.clip(shading, 0.0, 1.0)
     pixel = ro.shade_albedo(albedo, clipped_shading, torch_mode)
-    return (pixel, clipped_shading) if return_shading else pixel
+    return (pixel, shading) if return_shading else pixel
 
 
 def do_forward_pass(sh_coeff, feats, dataset):
@@ -187,6 +189,9 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
         )
 
         ic(val_render_pixels.dtype, val_shading.dtype)
+
+        shading_hist = wandb.Histogram(list(val_shading))
+        wandb.log({"val/shading_hist": shading_hist})
 
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
