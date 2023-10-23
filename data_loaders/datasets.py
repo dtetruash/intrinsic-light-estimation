@@ -546,7 +546,7 @@ if __name__ == "__main__":
     ds = IntrinsicGlobalDataset(config, split="val")
     print(f"Loaded dataset has {len(ds)} samples.")
 
-    frame_num = np.random.random_integers(ds.num_frames)
+    frame_num = np.random.randint(ds.num_frames)
     print(f"Showing data from frame {frame_num}")
     attibute_streams, occupancy = ds.get_frame_decomposition(frame_num)
     img_pixels, albedo, shading, normal = attibute_streams
