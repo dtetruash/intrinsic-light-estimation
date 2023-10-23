@@ -109,10 +109,7 @@ def validate_model(sh_coeff, valid_dl):
             samples_in_batch = feats.size(0)
 
             # Forward pass
-            val_loss, val_psnr = do_forward_pass(
-                sh_coeff,
-                feats,
-            )
+            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, valid_dl.dataset)
 
             val_loss_acc += val_loss.item() * samples_in_batch
             val_psnr_acc += val_psnr * samples_in_batch
@@ -145,16 +142,10 @@ def render_pixel_from_sh(
     return (pixel, clipped_shading) if return_shading else pixel
 
 
-def do_forward_pass(sh_coeff, feats):
+def do_forward_pass(sh_coeff, feats, dataset):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
-    # FIXME: Check this against the current output of the datasets.
-    # Does not seem like it. So this might cause degeneracy
 
-    # ic(type(feats), feats.shape)
-    gt_rgb, albedo, _, normals = feats.unbind(-2)
-    # ic(type(normals), normals.shape)
-    # ic(type(albedo), albedo.shape)
-    # ic(type(gt_rgb), gt_rgb.shape)
+    gt_rgb, albedo, _, normals = dataset.unpack_item_batch(feats)
 
     # render pixel with SH:
     # NOTE: We should broadcast the coeffs to num of normals here,
