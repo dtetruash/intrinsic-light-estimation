@@ -5,6 +5,7 @@ format for further processing.
 
 from log import get_logger
 
+from icecream import ic
 import cv2
 import numpy as np
 from PIL import Image
@@ -120,7 +121,19 @@ def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio
             else:
                 image = np.asarray(Image.open(path))
 
-            images[channel] = image / 255.0
+            if image.dtype == np.uint8:
+                norm_factor = float(2**8 - 1)
+            elif image.dtype == np.uint16:
+                norm_factor = float(2**16 - 1)
+            else:
+                raise ValueError(
+                    f"Loaded image has unsupported type {image.dtype}"
+                    f" for channel {channel} from"
+                    f" path {path}. Supported types are np.uint8 and np.uint16."
+                )
+
+            images[channel] = (image / norm_factor).astype(np.float32)
+
         except ValueError:
             print(
                 f"The necessary image channel pass '{channel}' for image"
@@ -139,5 +152,8 @@ def load_frame_channels(frame_number, channels, data_path=None, downsample_ratio
         for channel, image in images.items():
             downsampled_images[channel] = resample_image(image, W, H)
         images = downsampled_images
+
+    for channel, image in images.items():
+        ic(channel, image.dtype, image.min(), image.max(), image.shape)
 
     return W, H, images
