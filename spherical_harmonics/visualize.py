@@ -5,6 +5,13 @@ from icecream import ic
 from spherical_harmonics import render_second_order_SH, get_SH_alpha
 from matplotlib import cm, colors  # noqa: F401
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+import matplotlib.style as mplstyle
+
+mplstyle.use("fast")
+
+from rich.traceback import install
+
+install()
 
 
 def generate_harmonic_sphere_image(sh_coeffs, camera_transform):
@@ -76,17 +83,30 @@ def get_sphere_surface_cartesian(resolution=100):
 def visualie_SH_on_3D_sphere(sh_coeffs):
     x, y, z = get_sphere_surface_cartesian()
     cart_normals = np.stack([x, y, z]).transpose((1, 2, 0))
+
     # Calculate the spherical harmonic Y(l,m) and normalize to [0,1]
     fcolors = render_second_order_SH(sh_coeffs, cart_normals, torch_mode=False)
     fmax, fmin = fcolors.max(), fcolors.min()
     fcolors = (fcolors - fmin) / (fmax - fmin)
 
     # Set the aspect ratio to 1 so our sphere looks spherical
-    fig = plt.figure(figsize=plt.figaspect(1.0))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.plot_surface(x, y, z, rstride=1, cstride=1, facecolors=cm.seismic(fcolors))
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    face_colors = cm.gray(fcolors)
+    surface = ax.plot_surface(
+        x,
+        y,
+        z,
+        facecolors=face_colors,
+        linewidth=0,
+        antialiased=False,
+        rstride=1,
+        cstride=1,
+    )
+
+    # Add a color bar which maps values to colors.
+    fig.colorbar(surface, cmap=face_colors, shrink=0.5, aspect=5)
+
     # Turn off the axis planes
-    ax.set_axis_off()
     plt.show()
 
 
@@ -195,4 +215,4 @@ def visualize_SH_validation_with_scipy():
 
 if __name__ == "__main__":
     # axes.set_yticks(np.arange(len(ns)), labels=[f"n={n};m={m}" for n, m in zip(ns, ms)])
-    visualie_SH_on_3D_sphere(np.eye(9)[2])
+    visualie_SH_on_3D_sphere(np.eye(9)[3])
