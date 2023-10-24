@@ -80,6 +80,14 @@ def get_sphere_surface_cartesian(resolution=100):
     return x, y, z
 
 
+def draw_3D_axis(ax, axis_len=0.5, rot=np.eye(3)):
+    # TODO: Add rotation by the rot matrix
+    # Draw a set of x, y, z axes for reference.
+    ax.plot([-axis_len, axis_len], [0, 0], [0, 0], c="red", lw=1, zorder=10)
+    ax.plot([0, 0], [-axis_len, axis_len], [0, 0], c="green", lw=1, zorder=10)
+    ax.plot([0, 0], [0, 0], [-axis_len, axis_len], c="blue", lw=1, zorder=10)
+
+
 def visualie_SH_on_3D_sphere(sh_coeffs):
     x, y, z = get_sphere_surface_cartesian()
     cart_normals = np.stack([x, y, z]).transpose((1, 2, 0))
