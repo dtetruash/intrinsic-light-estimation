@@ -10,6 +10,7 @@ import torch.autograd.anomaly_mode
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
+import wandb.plot
 from data_loaders import olat_render as ro
 from data_loaders.datasets import (
     IntrinsicDataset,
@@ -121,6 +122,20 @@ def validate_model(sh_coeff, valid_dl):
     return val_loss_acc / samples_in_set, val_psnr_acc / samples_in_set
 
 
+def nornalize_to_canonical_range(x):
+    """Scale and shift the array to the canonical range [0..1] with full support.
+    Output's range will be [0..1], always.
+
+    Args:
+        x (ndarray or torch.Tensor): array of values
+
+    Returns:
+        Array/Tensor of values in x scaled to [0..1]. Will always have full range.
+    """
+    xmax, xmin = x.max(), x.min()
+    return (x - xmin) / (xmax - xmin)
+
+
 # TODO: move this to SH module
 def render_pixel_from_sh(
     sh_coeff, normals, albedo, torch_mode=True, return_shading=False
@@ -163,7 +178,7 @@ def do_forward_pass(sh_coeff, feats, dataset):
 
 
 # TODO: move to image gen
-def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
+def generate_validation_artefacts_from_global_sh(sh_coeff, valid_dataset):
     """Generate an image comparing a ground truth image
     with one generated using the model.
     model: MLP which outputs light direction vectors"""
@@ -180,6 +195,7 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
 
         _, albedo, _, world_normals = gt_attributes
 
+        # NOTE: This returns unplipped shading for debuging.
         val_render_pixels, val_shading = render_pixel_from_sh(
             sh_coeff.numpy(),
             world_normals.numpy(),
@@ -190,8 +206,16 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
 
         ic(val_render_pixels.dtype, val_shading.dtype)
 
-        shading_hist = wandb.Histogram(list(val_shading))
-        wandb.log({"val/shading_hist": shading_hist})
+        logger.info("Making shading values histogram...")
+        ic(val_shading.shape, val_shading.min(), val_shading.max(), val_shading.dtype)
+        shading_table = wandb.Table(
+            data=list(enumerate(val_shading)), columns=["pixel_num", "shading"]
+        )
+        histogram = wandb.plot.histogram(
+            shading_table, value="shading", title="Unclipped Shading rendered values."
+        )
+        wandb.log({"val/shading_hist": histogram})
+        logger.info("Done.")
 
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
@@ -200,6 +224,10 @@ def generate_validation_image_from_global_sh(sh_coeff, valid_dataset):
             W, H, val_render_pixels, occupancy_mask, add_alpha=True
         )
 
+        # FIXME: Add the noramlization procedure here later?
+        val_shading = np.clip(
+            val_shading, 0.0, 1.0
+        )  # Clip the shading for proper visualization.
         val_shading_image = ro.reconstruct_image(
             W, H, val_shading, occupancy_mask, add_alpha=True
         )
@@ -330,7 +358,7 @@ def main():
         avg_val_loss, avg_val_psnr = validate_model(sh_coeff, valid_dl)
 
         # Render a validation image and log it to wandb
-        val_image_array, image_caption = generate_validation_image_from_global_sh(
+        val_image_array, image_caption = generate_validation_artefacts_from_global_sh(
             sh_coeff, valid_dl.dataset
         )
 
