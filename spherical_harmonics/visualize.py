@@ -3,7 +3,8 @@ import numpy as np
 from matplotlib import pyplot as plt
 from icecream import ic
 from spherical_harmonics import render_second_order_SH, get_SH_alpha
-from matplotlib import cm, colors  # noqa: F401
+from matplotlib import cm  # noqa: F401
+from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 import matplotlib.style as mplstyle
 
@@ -80,26 +81,74 @@ def get_sphere_surface_cartesian(resolution=100):
     return x, y, z
 
 
-def draw_3D_axis(ax, axis_len=0.5, rot=np.eye(3)):
-    # TODO: Add rotation by the rot matrix
+def meshgrid_to_matrix(*grid):
+    """Take a meshgrid to an (N,M) matrix.
+        *grid: mesh grid coordianate arrays (like x,y,z)
+
+    Returns:
+        Single matrix N,M where M=grid(i).size and N=len(grid)
+    """
+    return np.stack([g.ravel() for g in grid])
+
+
+def matrix_to_meshgrid(matrix, res=100):
+    return tuple(row.reshape(res, res) for row in np.vsplit(matrix, 3))
+
+
+def draw_3D_axis(ax, rot_matrix=np.eye(3)):
     # Draw a set of x, y, z axes for reference.
-    ax.plot([-axis_len, axis_len], [0, 0], [0, 0], c="red", lw=1, zorder=10)
-    ax.plot([0, 0], [-axis_len, axis_len], [0, 0], c="green", lw=1, zorder=10)
-    ax.plot([0, 0], [0, 0], [-axis_len, axis_len], c="blue", lw=1, zorder=10)
+    # Axes are stores as columns of the rotation matrix
+    for vector, color in zip(rot_matrix.T, ["r", "g", "b"]):
+        ax.quiver(
+            *[0, 0, 0],
+            *vector,
+            length=1.5,
+            color=color,
+            pivot="middle",
+            arrow_length_ratio=0.05,
+            zorder=2,
+        )
 
 
-def visualie_SH_on_3D_sphere(sh_coeffs):
-    x, y, z = get_sphere_surface_cartesian()
-    cart_normals = np.stack([x, y, z]).transpose((1, 2, 0))
+def visualie_SH_on_3D_sphere(sh_coeffs, rot_matrix=np.eye(3)):
+    """Visualize a unit sphere shaded by SH lighting.
+
+    Args:
+        sh_coeffs (ndarray): second order SH coefficients
+        rot_matrix (ndarray): 3x3 world-to-camera rotation matrix
+    """
+    cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian())
+    ic(cart_normals.shape)
+
+    rot_cart_normals = rot_matrix @ cart_normals
+    ic(rot_cart_normals.shape)
+    ic(rot_cart_normals.T.shape)
 
     # Calculate the spherical harmonic Y(l,m) and normalize to [0,1]
-    fcolors = render_second_order_SH(sh_coeffs, cart_normals, torch_mode=False)
-    fmax, fmin = fcolors.max(), fcolors.min()
-    fcolors = (fcolors - fmin) / (fmax - fmin)
+    fcolors = render_second_order_SH(sh_coeffs, rot_cart_normals.T, torch_mode=False)
+    ic(fcolors.shape, fcolors.min(), fcolors.max())
+    fcolors = fcolors.reshape(100, 100)
 
     # Set the aspect ratio to 1 so our sphere looks spherical
-    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
-    face_colors = cm.gray(fcolors)
+    ax = plt.axes(projection="3d", computed_zorder=False)
+    ax.set_proj_type("ortho")
+    ax.set_box_aspect((1, 1, 1))
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_zlim(-1, 1)
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
+    # Set the plot camera to mimic canonical camera-space
+    ax.view_init(elev=90, azim=-90)  # Look at the +XY plane
+
+    x, y, z = matrix_to_meshgrid(rot_cart_normals)
+    ic(x.shape, y.shape, z.shape)
+    ic(x.min(), x.max())
+    ic(y.min(), y.max())
+    ic(z.min(), z.max())
+    norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
+    face_colors = cm.viridis(norm(fcolors))
     surface = ax.plot_surface(
         x,
         y,
@@ -109,10 +158,12 @@ def visualie_SH_on_3D_sphere(sh_coeffs):
         antialiased=False,
         rstride=1,
         cstride=1,
+        zorder=1,
     )
 
-    # Add a color bar which maps values to colors.
-    fig.colorbar(surface, cmap=face_colors, shrink=0.5, aspect=5)
+    # Draw the axis guides
+    draw_3D_axis(ax, rot_matrix)
+    # ax.set_axis_off()
 
     # Turn off the axis planes
     plt.show()
@@ -223,4 +274,4 @@ def visualize_SH_validation_with_scipy():
 
 if __name__ == "__main__":
     # axes.set_yticks(np.arange(len(ns)), labels=[f"n={n};m={m}" for n, m in zip(ns, ms)])
-    visualie_SH_on_3D_sphere(np.eye(9)[3])
+    visualie_SH_on_3D_sphere(np.eye(9)[2])
