@@ -19,6 +19,8 @@ from data_loaders.datasets import (
     OLATDataset,
     unpack_item,
 )
+from data_loaders.metadata_loader import get_c2w
+from spherical_harmonics.visualize import visualie_SH_on_3D_sphere
 from data_loaders.get_dataloader import get_dataloader
 from icecream import ic
 from ile_utils.config import Config
@@ -178,7 +180,7 @@ def do_forward_pass(sh_coeff, feats, dataset):
 
 
 # TODO: move to image gen
-def generate_validation_artefacts_from_global_sh(sh_coeff, valid_dataset):
+def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_dataset):
     """Generate an image comparing a ground truth image
     with one generated using the model.
     model: MLP which outputs light direction vectors"""
@@ -206,6 +208,7 @@ def generate_validation_artefacts_from_global_sh(sh_coeff, valid_dataset):
 
         ic(val_render_pixels.dtype, val_shading.dtype)
 
+        # HISTOGRAM OF SHADING
         logger.info("Making shading values histogram...")
         ic(val_shading.shape, val_shading.min(), val_shading.max(), val_shading.dtype)
         shading_table = wandb.Table(
@@ -216,6 +219,21 @@ def generate_validation_artefacts_from_global_sh(sh_coeff, valid_dataset):
         )
         wandb.log({"val/shading_hist": histogram})
         logger.info("Done.")
+        # END HISTOGRAM
+
+        # SH VIS ON SPHERE
+        R_c2w = get_c2w(frame_number)
+        fig = visualie_SH_on_3D_sphere(
+            sh_coeff.numpy(), camera_orientation=R_c2w, show_extremes=True
+        )
+        wandb.log(
+            {
+                "val/vis_sh": wandb.Image(
+                    fig, caption=f"SH sphere after {val_step} epochs."
+                )
+            }
+        )
+        # END SH VIS ON SPHERE
 
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
@@ -270,10 +288,17 @@ def generate_validation_artefacts_from_global_sh(sh_coeff, valid_dataset):
         image_array = np.concatenate([validation_row, gt_row], axis=0)
 
         image_caption = (
-            "Top row : Inference. Bottom: GT.\nLeft to right: Render, Shading."
+            "Top row : Inference. Bottom: GT.\n"
+            "Left to right: Render, Shading.\n"
+            f"(After epoch {val_step})."
         )
 
-        return image_array, image_caption
+        val_image = wandb.Image(image_array, caption=image_caption)
+
+        val_metrics = {
+            "val/images": val_image,
+        }
+        wandb.log(val_metrics)
 
 
 def get_dataset(config, split="train"):
@@ -354,23 +379,16 @@ def main():
         )
         wandb.log({"train/avg_loss": avg_loss, "train/avg_psnr": avg_psnr})
 
-        # TODO: Add validation loop here to eval loss and
         avg_val_loss, avg_val_psnr = validate_model(sh_coeff, valid_dl)
 
-        # Render a validation image and log it to wandb
-        val_image_array, image_caption = generate_validation_artefacts_from_global_sh(
-            sh_coeff, valid_dl.dataset
-        )
-
-        # TODO: Add alert if the images were strage?
-        val_image = wandb.Image(val_image_array, caption=image_caption)
-
         val_metrics = {
-            "val/images": val_image,
             "val/loss": avg_val_loss,
             "val/psnr": avg_val_psnr,
         }
         wandb.log(val_metrics)
+
+        # Render a validation image and log it to wandb
+        generate_validation_artefacts_from_global_sh(epoch, sh_coeff, valid_dl.dataset)
 
     # Save the coefficients produced
     coeff_table = wandb.Table(columns=[f"C{i}" for i in range(9)])
