@@ -1,12 +1,17 @@
-from scipy.special import sph_harm
+import json
+
+import matplotlib.style as mplstyle
 import numpy as np
-from matplotlib import pyplot as plt
 from icecream import ic
-from spherical_harmonics import render_second_order_SH, get_SH_alpha
+from ile_utils.config import Config
 from matplotlib import cm  # noqa: F401
+from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-import matplotlib.style as mplstyle
+from scipy.special import sph_harm
+from data_loaders import olat_render as ro
+
+from spherical_harmonics import get_SH_alpha, render_second_order_SH
 
 mplstyle.use("fast")
 
@@ -102,54 +107,80 @@ def draw_3D_axis(ax, rot_matrix=np.eye(3)):
         ax.quiver(
             *[0, 0, 0],
             *vector,
-            length=1.5,
+            length=0.75,
             color=color,
-            pivot="middle",
+            pivot="tail",
             arrow_length_ratio=0.05,
             zorder=2,
         )
 
 
-def visualie_SH_on_3D_sphere(sh_coeffs, rot_matrix=np.eye(3)):
+def make_equal_axis_aspect(ax):
+    ax.set_box_aspect((1, 1, 1))
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_zlim(-1, 1)
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+
+
+def plot_poles(ax, rot_matrix=np.eye(3)):
+    north_pole = rot_matrix @ np.array([0, 0, 1])
+    south_pole = rot_matrix @ np.array([0, 0, -1])
+
+    nx, ny, nz = north_pole
+    sx, sy, sz = south_pole
+
+    ax.scatter([nx], [ny], [nz], s=4, c="white", edgecolors=["black"], zorder=3)
+    ax.scatter([sx], [sy], [sz], s=4, c="black", edgecolors=["white"], zorder=3)
+
+
+def visualie_SH_on_3D_sphere(
+    sh_coeffs, camera_orientation=np.eye(3), draw_gizmos=True, resolution=100
+):
     """Visualize a unit sphere shaded by SH lighting.
 
     Args:
         sh_coeffs (ndarray): second order SH coefficients
         rot_matrix (ndarray): 3x3 world-to-camera rotation matrix
     """
-    cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian())
+    cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian(resolution))
     ic(cart_normals.shape)
 
-    rot_cart_normals = rot_matrix @ cart_normals
-    ic(rot_cart_normals.shape)
-    ic(rot_cart_normals.T.shape)
-
     # Calculate the spherical harmonic Y(l,m) and normalize to [0,1]
-    fcolors = render_second_order_SH(sh_coeffs, rot_cart_normals.T, torch_mode=False)
+    fcolors = render_second_order_SH(sh_coeffs, cart_normals.T, torch_mode=False)
     ic(fcolors.shape, fcolors.min(), fcolors.max())
-    fcolors = fcolors.reshape(100, 100)
+    fcolors = fcolors.reshape(resolution, resolution)
 
     # Set the aspect ratio to 1 so our sphere looks spherical
     ax = plt.axes(projection="3d", computed_zorder=False)
     ax.set_proj_type("ortho")
-    ax.set_box_aspect((1, 1, 1))
-    ax.set_xlim(-1, 1)
-    ax.set_ylim(-1, 1)
-    ax.set_zlim(-1, 1)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    ax.set_zlabel("z")
-    # Set the plot camera to mimic canonical camera-space
-    ax.view_init(elev=90, azim=-90)  # Look at the +XY plane
+    make_equal_axis_aspect(ax)
 
-    x, y, z = matrix_to_meshgrid(rot_cart_normals)
+    # Set the plot camera to correcpond to the given camera orientation
+    # Decompose the rotation matrix into elevation and azimuth
+    # Calculate the camera direction vector
+    camera_direction = -np.dot(camera_orientation, np.array([0, 0, -1]))
+    ic(camera_direction)
+
+    # Calculate azimuth and elevation angles
+    cx, cy, cz = camera_direction
+    azim = np.degrees(np.arctan2(cy, cx))
+    elev = np.degrees(np.arcsin(cz))
+
+    ic(elev, azim)
+    ax.view_init(roll=0, elev=elev, azim=azim)
+
+    x, y, z = matrix_to_meshgrid(cart_normals)
     ic(x.shape, y.shape, z.shape)
     ic(x.min(), x.max())
     ic(y.min(), y.max())
     ic(z.min(), z.max())
+
     norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
-    face_colors = cm.viridis(norm(fcolors))
-    surface = ax.plot_surface(
+    face_colors = cm.gray(norm(fcolors))
+    ax.plot_surface(
         x,
         y,
         z,
@@ -162,8 +193,11 @@ def visualie_SH_on_3D_sphere(sh_coeffs, rot_matrix=np.eye(3)):
     )
 
     # Draw the axis guides
-    draw_3D_axis(ax, rot_matrix)
-    # ax.set_axis_off()
+    if draw_gizmos:
+        draw_3D_axis(ax)
+        plot_poles(ax)
+
+    ax.set_axis_off()
 
     # Turn off the axis planes
     plt.show()
@@ -273,5 +307,13 @@ def visualize_SH_validation_with_scipy():
 
 
 if __name__ == "__main__":
-    # axes.set_yticks(np.arange(len(ns)), labels=[f"n={n};m={m}" for n, m in zip(ns, ms)])
-    visualie_SH_on_3D_sphere(np.eye(9)[2])
+    # Read the c2w from file.
+    config = Config.get_config()
+    file_path = config.get("paths", "transforms_file")
+    ic(file_path)
+    with open(file_path, "r") as tf:
+        frame_transforms = json.loads(tf.read())
+
+    # I am supplying the C2W matrix here. Rotates objects from the camera to world.
+    R_img = ro.to_rotation(ro.get_c2w(74, frame_transforms))
+    visualie_SH_on_3D_sphere(np.eye(9)[2], camera_orientation=R_img)
