@@ -1,5 +1,6 @@
 import json
 
+import copy
 import matplotlib.style as mplstyle
 import numpy as np
 from icecream import ic
@@ -116,7 +117,7 @@ def draw_3D_axis(ax, rot_matrix=np.eye(3)):
 
 
 def make_equal_axis_aspect(ax):
-    ax.set_box_aspect((1, 1, 1))
+    ax.set_box_aspect((1, 1, 1), zoom=1.65)
     ax.set_xlim(-1, 1)
     ax.set_ylim(-1, 1)
     ax.set_zlim(-1, 1)
@@ -137,14 +138,24 @@ def plot_poles(ax, rot_matrix=np.eye(3)):
 
 
 def visualie_SH_on_3D_sphere(
-    sh_coeffs, camera_orientation=np.eye(3), draw_gizmos=True, resolution=100
+    sh_coeffs,
+    camera_orientation=np.eye(3),
+    draw_gizmos=True,
+    resolution=100,
+    bg_color="white",
+    show_extremes=False,
 ):
     """Visualize a unit sphere shaded by SH lighting.
 
     Args:
         sh_coeffs (ndarray): second order SH coefficients
-        rot_matrix (ndarray): 3x3 world-to-camera rotation matrix
+        rot_matrix (ndarray): 3x3 camera-to-world rotation matrix
+        draw_gizmos (bool): draw world-axes and pole gizmos
+        resolution (int): resolution of the sphere's surface along phi and theta
+        bg_color (str): figure background color
+        show_extremes (bool): highligh values outside [0,1] with red and blue resp.
     """
+
     cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian(resolution))
     ic(cart_normals.shape)
 
@@ -158,9 +169,19 @@ def visualie_SH_on_3D_sphere(
     ax.set_proj_type("ortho")
     make_equal_axis_aspect(ax)
 
+    # Draw the axis guides and poles
+    if draw_gizmos:
+        draw_3D_axis(ax)
+        plot_poles(ax)
+
+    # set the background color
+    ax.set_facecolor(bg_color)
+
+    ax.set_axis_off()
+    plt.tight_layout()
+
     # Set the plot camera to correcpond to the given camera orientation
-    # Decompose the rotation matrix into elevation and azimuth
-    # Calculate the camera direction vector
+    # Decompose the rotation matrix into elevation and azimuth from the camera direction axis
     camera_direction = -np.dot(camera_orientation, np.array([0, 0, -1]))
     ic(camera_direction)
 
@@ -172,15 +193,26 @@ def visualie_SH_on_3D_sphere(
     ic(elev, azim)
     ax.view_init(roll=0, elev=elev, azim=azim)
 
+    # Plot the shpere's surface
     x, y, z = matrix_to_meshgrid(cart_normals)
     ic(x.shape, y.shape, z.shape)
     ic(x.min(), x.max())
     ic(y.min(), y.max())
     ic(z.min(), z.max())
 
-    norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
-    face_colors = cm.gray(norm(fcolors))
-    ax.plot_surface(
+    # fcolors = np.zeros((resolution, resolution))
+
+    # Get the shading of each surface face
+    cmap = copy.copy(plt.get_cmap("gray"))
+    if show_extremes:
+        cmap.set_under("red")
+        cmap.set_over("blue")
+        face_colors = cmap(fcolors)
+    else:
+        norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
+        face_colors = cmap(norm(fcolors))
+
+    surface = ax.plot_surface(
         x,
         y,
         z,
@@ -190,14 +222,8 @@ def visualie_SH_on_3D_sphere(
         rstride=1,
         cstride=1,
         zorder=1,
+        shade=False,
     )
-
-    # Draw the axis guides
-    if draw_gizmos:
-        draw_3D_axis(ax)
-        plot_poles(ax)
-
-    ax.set_axis_off()
 
     # Turn off the axis planes
     plt.show()
@@ -316,4 +342,4 @@ if __name__ == "__main__":
 
     # I am supplying the C2W matrix here. Rotates objects from the camera to world.
     R_img = ro.to_rotation(ro.get_c2w(74, frame_transforms))
-    visualie_SH_on_3D_sphere(np.eye(9)[2], camera_orientation=R_img)
+    visualie_SH_on_3D_sphere(np.eye(9)[5], camera_orientation=R_img, bg_color="black")
