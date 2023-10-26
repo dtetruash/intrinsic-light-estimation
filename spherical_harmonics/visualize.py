@@ -12,7 +12,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from scipy.special import sph_harm
 from data_loaders import olat_render as ro
 
-from spherical_harmonics import get_SH_alpha, render_second_order_SH
+from spherical_harmonics.spherical_harmonics import get_SH_alpha, render_second_order_SH
 
 mplstyle.use("fast")
 
@@ -194,13 +194,6 @@ def visualie_SH_on_3D_sphere(
     ax.view_init(roll=0, elev=elev, azim=azim)
 
     # Plot the shpere's surface
-    x, y, z = matrix_to_meshgrid(cart_normals)
-    ic(x.shape, y.shape, z.shape)
-    ic(x.min(), x.max())
-    ic(y.min(), y.max())
-    ic(z.min(), z.max())
-
-    # fcolors = np.zeros((resolution, resolution))
 
     # Get the shading of each surface face
     cmap = copy.copy(plt.get_cmap("gray"))
@@ -212,10 +205,9 @@ def visualie_SH_on_3D_sphere(
         norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
         face_colors = cmap(norm(fcolors))
 
-    surface = ax.plot_surface(
-        x,
-        y,
-        z,
+    # Plot the sphrer with the right colors
+    ax.plot_surface(
+        *matrix_to_meshgrid(cart_normals, res=resolution),
         facecolors=face_colors,
         linewidth=0,
         antialiased=False,
@@ -225,8 +217,7 @@ def visualie_SH_on_3D_sphere(
         shade=False,
     )
 
-    # Turn off the axis planes
-    plt.show()
+    return plt.gcf()
 
 
 def visualize_SH_validation_with_scipy():
@@ -332,6 +323,15 @@ def visualize_SH_validation_with_scipy():
     plt.show()
 
 
+def plot2npimage(fig):
+    canvas = fig.canvas
+    canvas.draw()  # Draw the canvas, cache the renderer
+
+    width, height = fig.get_size_inches() * fig.get_dpi()
+    img = np.fromstring(canvas.tostring_rgb(), dtype="uint8").reshape(height, width, 3)
+    return img
+
+
 if __name__ == "__main__":
     # Read the c2w from file.
     config = Config.get_config()
@@ -342,4 +342,9 @@ if __name__ == "__main__":
 
     # I am supplying the C2W matrix here. Rotates objects from the camera to world.
     R_img = ro.to_rotation(ro.get_c2w(74, frame_transforms))
-    visualie_SH_on_3D_sphere(np.eye(9)[5], camera_orientation=R_img, bg_color="black")
+    fig = visualie_SH_on_3D_sphere(
+        np.eye(9)[5], camera_orientation=R_img, bg_color="black", resolution=400
+    )
+
+    plt.savefig("sphere.png", bbox_inches="tight", pad_inches=0)
+    plt.show()
