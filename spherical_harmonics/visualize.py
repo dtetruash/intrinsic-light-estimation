@@ -1,38 +1,22 @@
+import copy
 import json
 
-import copy
 import matplotlib.style as mplstyle
 import numpy as np
+from data_loaders import olat_render as ro
 from icecream import ic
 from ile_utils.config import Config
-from matplotlib import cm  # noqa: F401
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from scipy.special import sph_harm
-from data_loaders import olat_render as ro
-
-from spherical_harmonics.spherical_harmonics import get_SH_alpha, render_second_order_SH
+import spherical_harmonics as sh
 
 mplstyle.use("fast")
 
 from rich.traceback import install
 
 install()
-
-
-def generate_harmonic_sphere_image(sh_coeffs, camera_transform):
-    """Create a visualization of the shading represented by spherical harmonics
-    from a given camera-angle.
-
-    Args:
-        sh_coeffs (torch.Tensor or ndarray): spherical harmonics coefficients of second order
-        camera_transform (ndarray): extrinsic camera transform.
-
-    Raises:
-        NotImplementedError: [TODO:throw]
-    """
-    raise NotImplementedError()
 
 
 def generate_harmonic_latlong_image(sh_coeffs, image_dim=100):
@@ -52,7 +36,9 @@ def generate_harmonic_latlong_image(sh_coeffs, image_dim=100):
     ic(cart_normals.shape)
 
     # rendred each point in cart_normals
-    shading_rendering = render_second_order_SH(sh_coeffs, cart_normals, torch_mode=False)
+    shading_rendering = sh.render_second_order_SH(
+        sh_coeffs, cart_normals, torch_mode=False
+    )
     ic(shading_rendering.shape)
     return shading_rendering.reshape(image_dim, image_dim, -1)
 
@@ -112,6 +98,7 @@ def draw_3D_axis(ax, rot_matrix=np.eye(3)):
             color=color,
             pivot="tail",
             arrow_length_ratio=0.05,
+            linewidth=1,
             zorder=2,
         )
 
@@ -137,9 +124,59 @@ def plot_poles(ax, rot_matrix=np.eye(3)):
     ax.scatter([sx], [sy], [sz], s=4, c="black", edgecolors=["white"], zorder=3)
 
 
+def plot_SH_sphere_on_axis(
+    ax,
+    surface_points,
+    surface_values,
+    camera_orientation,
+    draw_gizmos=True,
+    bg_color="white",
+    show_extremes=False,
+):
+    # Set the aspect ratio to 1 so our sphere looks spherical
+    ax.set_proj_type("ortho")
+    make_equal_axis_aspect(ax)
+
+    # Draw the axis guides and poles
+    if draw_gizmos:
+        draw_3D_axis(ax)
+        plot_poles(ax)
+
+    # set the background color
+    ax.set_facecolor(bg_color)
+
+    ax.set_axis_off()
+    plt.tight_layout()
+
+    # Set the plot camera to correcpond to the given camera orientation
+    orientate_3d_axes(ax, camera_orientation)
+
+    # Get the shading of each surface face
+    cmap = copy.copy(plt.get_cmap("gray"))
+    if show_extremes:
+        cmap.set_under("orange")
+        cmap.set_over("blue")
+        face_colors = cmap(surface_values)
+    else:
+        norm = Normalize(vmin=surface_values.min(), vmax=surface_values.max())
+        face_colors = cmap(norm(surface_values))
+
+    # Plot the sphrer with the right colors
+    ax.plot_surface(
+        *surface_points,
+        facecolors=face_colors,
+        linewidth=0,
+        antialiased=False,
+        rstride=1,
+        cstride=1,
+        zorder=1,
+        shade=False,
+    )
+
+
 def visualie_SH_on_3D_sphere(
     sh_coeffs,
-    camera_orientation=np.eye(3),
+    camera_orientations=[np.eye(3)],
     draw_gizmos=True,
     resolution=100,
     bg_color="white",
@@ -156,68 +193,34 @@ def visualie_SH_on_3D_sphere(
         show_extremes (bool): highligh values outside [0,1] with red and blue resp.
     """
 
+    # Prepare the data
     cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian(resolution))
     ic(cart_normals.shape)
 
-    # Calculate the spherical harmonic Y(l,m) and normalize to [0,1]
-    fcolors = render_second_order_SH(sh_coeffs, cart_normals.T, torch_mode=False)
+    # Calculate the spherical harmonic Y(l,m)
+    fcolors = sh.render_second_order_SH(
+        sh_coeffs, cart_normals.T, torch_mode=False
+    ).reshape(resolution, resolution)
     ic(fcolors.shape, fcolors.min(), fcolors.max())
-    fcolors = fcolors.reshape(resolution, resolution)
 
-    # Set the aspect ratio to 1 so our sphere looks spherical
-    ax = plt.axes(projection="3d", computed_zorder=False)
-    ax.set_proj_type("ortho")
-    make_equal_axis_aspect(ax)
+    surface_points = matrix_to_meshgrid(cart_normals, res=resolution)
 
-    # Draw the axis guides and poles
-    if draw_gizmos:
-        draw_3D_axis(ax)
-        plot_poles(ax)
+    fig = plt.figure()
+    axes_kwargs = {"projection": "3d", "computed_zorder": False}
+    num_plots = len(camera_orientations)
+    for i in range(num_plots):
+        ax = fig.add_subplot(1, num_plots, i + 1, **axes_kwargs)
+        plot_SH_sphere_on_axis(
+            ax,
+            surface_points,
+            fcolors,
+            camera_orientations[i],
+            draw_gizmos,
+            bg_color,
+            show_extremes,
+        )
 
-    # set the background color
-    ax.set_facecolor(bg_color)
-
-    ax.set_axis_off()
-    plt.tight_layout()
-
-    # Set the plot camera to correcpond to the given camera orientation
-    # Decompose the rotation matrix into elevation and azimuth from the camera direction axis
-    camera_direction = -np.dot(camera_orientation, np.array([0, 0, -1]))
-    ic(camera_direction)
-
-    # Calculate azimuth and elevation angles
-    cx, cy, cz = camera_direction
-    azim = np.degrees(np.arctan2(cy, cx))
-    elev = np.degrees(np.arcsin(cz))
-
-    ic(elev, azim)
-    ax.view_init(roll=0, elev=elev, azim=azim)
-
-    # Plot the shpere's surface
-
-    # Get the shading of each surface face
-    cmap = copy.copy(plt.get_cmap("gray"))
-    if show_extremes:
-        cmap.set_under("red")
-        cmap.set_over("blue")
-        face_colors = cmap(fcolors)
-    else:
-        norm = Normalize(vmin=fcolors.min(), vmax=fcolors.max())
-        face_colors = cmap(norm(fcolors))
-
-    # Plot the sphrer with the right colors
-    ax.plot_surface(
-        *matrix_to_meshgrid(cart_normals, res=resolution),
-        facecolors=face_colors,
-        linewidth=0,
-        antialiased=False,
-        rstride=1,
-        cstride=1,
-        zorder=1,
-        shade=False,
-    )
-
-    return plt.gcf()
+    return fig
 
 
 def visualize_SH_validation_with_scipy():
@@ -288,7 +291,7 @@ def visualize_SH_validation_with_scipy():
             )
         ax.axis("off")
 
-        alpha_n = get_SH_alpha(ns[i])
+        alpha_n = sh.get_SH_alpha(ns[i])
         ic(alpha_n, ns[i])
         sh *= alpha_n
         ax = axes[i, 2]
@@ -332,19 +335,43 @@ def plot2npimage(fig):
     return img
 
 
+def orientate_3d_axes(ax, camera_orientation):
+    # Decompose the rotation matrix into elevation and azimuth from the camera direction axis
+    camera_direction = -np.dot(camera_orientation, np.array([0, 0, -1]))
+
+    # Calculate azimuth and elevation angles
+    cx, cy, cz = camera_direction
+    azim = np.degrees(np.arctan2(cy, cx))
+    elev = np.degrees(np.arcsin(cz))
+
+    ic(elev, azim)
+    ax.view_init(roll=0, elev=elev, azim=azim)
+
+
 if __name__ == "__main__":
     # Read the c2w from file.
     config = Config.get_config()
-    file_path = config.get("paths", "transforms_file")
+    split = "test"
+    file_path = config.get("paths", "scene_path") + f"/transforms_{split}.json"
+
     ic(file_path)
     with open(file_path, "r") as tf:
         frame_transforms = json.loads(tf.read())
 
     # I am supplying the C2W matrix here. Rotates objects from the camera to world.
-    R_img = ro.to_rotation(ro.get_c2w(74, frame_transforms))
+    R_front = ro.to_rotation(ro.get_c2w(39, frame_transforms))
+    R_back = ro.to_rotation(ro.get_c2w(89, frame_transforms))
+    Rs = [R_front, R_back]
+    sh_coeff = np.array(
+        [0.07135, -0.1003, 0.162, -0.09631, -0.04226, 0.02891, 0.1266, -0.04299, -0.1085]
+    )
     fig = visualie_SH_on_3D_sphere(
-        np.eye(9)[5], camera_orientation=R_img, bg_color="black", resolution=400
+        sh_coeff,
+        camera_orientations=[R_front, R_back],
+        bg_color="black",
+        resolution=20,
+        show_extremes=True,
     )
 
-    plt.savefig("sphere.png", bbox_inches="tight", pad_inches=0)
+    # plt.savefig("sphere.png", bbox_inches="tight", pad_inches=0)
     plt.show()
