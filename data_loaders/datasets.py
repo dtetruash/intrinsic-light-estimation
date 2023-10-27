@@ -102,7 +102,7 @@ def image2stream(image, occupancy_mask):
     return ro.remove_alpha(image)[occupancy_mask]
 
 
-def gather_image_metadata(config):
+def gather_image_metadata(config, split="train"):
     """Gather the meta-data of the scene.
 
     Args:
@@ -111,7 +111,9 @@ def gather_image_metadata(config):
     Returns:
         Frame transforms dictionary, downsample ratio, number of frames to load.
     """
-    with open(config.get("paths", "transforms_file"), "r") as tf:
+    with open(
+        config.get("paths", "scene_path") + f"/transforms_{split}.json", "r"
+    ) as tf:
         frame_transforms = json.loads(tf.read())
 
     downsample_ratio = int(config.get("parameters", "downsample_ratio"))
@@ -135,7 +137,7 @@ class IntrinsicDataset(Dataset):
 
         # load information about the scene.
         # Get image transforms_file
-        frame_transforms, downsample_ratio = gather_image_metadata(config)
+        frame_transforms, downsample_ratio = gather_image_metadata(config, split)
         self.num_frames = len(frame_transforms["frames"])
         self.frame_transforms = frame_transforms
         logger.info(f"Transform file lists {self.num_frames} frames to load.")
@@ -153,12 +155,14 @@ class IntrinsicDataset(Dataset):
         frames = []
         pixel_streams = {channel_name: [] for channel_name in channels}
         occupancy_masks = []
+
         data_path = config.get("paths", "scene_path") + "/" + self.split
-        for frame_number, frame in tqdm(
+        logger.info(f"Loading dataset from {data_path}")
+        pbar = tqdm(
             enumerate(frame_transforms["frames"]),
-            desc=f"Loading dataset from {data_path}",
             total=self.num_frames,
-        ):
+        )
+        for frame_number, frame in pbar:
             # get all of the data attrs and load in the image cache
             W, H, images = il.load_frame_channels(
                 frame_number,
@@ -166,6 +170,8 @@ class IntrinsicDataset(Dataset):
                 data_path=data_path,
                 downsample_ratio=downsample_ratio,
             )
+
+            pbar.set_description(config.get("paths", "scene") + frame["file_path"][1:])
 
             # Assuing that all images have the same dimensions.
             if self.dim is None:
@@ -221,7 +227,8 @@ class IntrinsicDataset(Dataset):
     def __len__(self):
         return self._feats.shape[0]
 
-    def unpack_item_batch(self, item_batch):
+    @staticmethod
+    def unpack_item_batch(item_batch):
         """Unpack the feature tensor along he feature dimension.
 
         Args:
