@@ -19,16 +19,16 @@ from data_loaders.datasets import (
     OLATDataset,
     unpack_item,
 )
-from data_loaders.metadata_loader import get_c2w
-from spherical_harmonics.visualize import visualie_SH_on_3D_sphere
 from data_loaders.get_dataloader import get_dataloader
+from data_loaders.metadata_loader import get_camera_orientation
 from icecream import ic
 from ile_utils.config import Config
 from ile_utils.get_device import get_device
 from log import get_logger
 from losses.metrics import psnr
 from rich.traceback import install as install_rich
-from spherical_harmonics import spherical_harmonics as sh
+from spherical_harmonics.sph_harm import render_second_order_SH
+from spherical_harmonics.visualize import visualie_SH_on_3D_sphere
 from tqdm import tqdm
 
 install_rich()
@@ -159,7 +159,7 @@ def render_pixel_from_sh(
         Torch.tensor of rendered pixel colors (clipped to [0..1] in each channel).
     """
     lib = torch if torch_mode else np
-    shading = sh.render_second_order_SH(sh_coeff, normals, torch_mode)
+    shading = render_second_order_SH(sh_coeff, normals, torch_mode)
     clipped_shading = lib.clip(shading, 0.0, 1.0)
     pixel = ro.shade_albedo(albedo, clipped_shading, torch_mode)
     return (pixel, shading) if return_shading else pixel
@@ -191,7 +191,8 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
     sh_coeff.requires_grad_(False)
     with torch.inference_mode():
         # Randomly choose which image from the validation set to reconstruct
-        frame_number = rng.integers(valid_dataset.num_frames)
+        # frame_number = rng.integers(valid_dataset.num_frames)
+        frame_number = 39
 
         # Make top row of infered images
         # load attributes of this validation image
@@ -226,9 +227,10 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         # END HISTOGRAM
 
         # SH VIS ON SPHERE
-        R_c2w = get_c2w(frame_number)
+        R_front = get_camera_orientation(frame_number)
+        R_back = get_camera_orientation(89)
         fig = visualie_SH_on_3D_sphere(
-            sh_coeff.numpy(), camera_orientation=R_c2w, show_extremes=True
+            sh_coeff.numpy(), camera_orientations=[R_front, R_back], show_extremes=True
         )
         wandb.log(
             {
@@ -409,7 +411,7 @@ def main():
         validate_model(sh_coeff, valid_dl)
 
         # Render a validation image and log it to wandb
-        generate_validation_artefacts_from_global_sh(epoch, sh_coeff, valid_dl.dataset)
+        generate_validation_artefacts_from_global_sh(epoch, sh_coeff, test_dataset)
 
     # Compute the test error and metrics
     # TODO: Add test metric loop

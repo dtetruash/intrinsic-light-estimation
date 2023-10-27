@@ -1,7 +1,8 @@
 import torch
 
-import spherical_harmonics as sh
+import sphspherical_harmonics.sph_harm as sh
 from sampling import sample_uniform_sphere
+
 
 def SH_non_negativity(sh_coeff):
     thetas, phis = sample_uniform_sphere(K=6414)

@@ -15,5 +15,5 @@ def get_transform(frame_num, split="val"):
     return ro.get_c2w(frame_num, frame_transforms)
 
 
-def get_c2w(frame_num, split="val"):
+def get_camera_orientation(frame_num, split="val"):
     return ro.to_rotation(get_transform(frame_num, split))

@@ -9,14 +9,14 @@ from ile_utils.config import Config
 from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-from scipy.special import sph_harm
-import spherical_harmonics as sh
-
-mplstyle.use("fast")
-
 from rich.traceback import install
+from scipy.special import sph_harm
+
+from spherical_harmonics.sph_harm import render_second_order_SH
 
 install()
+
+mplstyle.use("fast")
 
 
 def generate_harmonic_latlong_image(sh_coeffs, image_dim=100):
@@ -36,9 +36,7 @@ def generate_harmonic_latlong_image(sh_coeffs, image_dim=100):
     ic(cart_normals.shape)
 
     # rendred each point in cart_normals
-    shading_rendering = sh.render_second_order_SH(
-        sh_coeffs, cart_normals, torch_mode=False
-    )
+    shading_rendering = render_second_order_SH(sh_coeffs, cart_normals, torch_mode=False)
     ic(shading_rendering.shape)
     return shading_rendering.reshape(image_dim, image_dim, -1)
 
@@ -198,7 +196,7 @@ def visualie_SH_on_3D_sphere(
     ic(cart_normals.shape)
 
     # Calculate the spherical harmonic Y(l,m)
-    fcolors = sh.render_second_order_SH(
+    fcolors = render_second_order_SH(
         sh_coeffs, cart_normals.T, torch_mode=False
     ).reshape(resolution, resolution)
     ic(fcolors.shape, fcolors.min(), fcolors.max())
@@ -322,8 +320,7 @@ def visualize_SH_validation_with_scipy():
     # Adjust layout
     plt.tight_layout()
 
-    # Show the plot
-    plt.show()
+    return fig
 
 
 def plot2npimage(fig):

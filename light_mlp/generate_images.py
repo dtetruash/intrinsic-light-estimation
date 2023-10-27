@@ -4,7 +4,7 @@ import torch
 from matplotlib.colors import Normalize
 
 from data_loaders import olat_render as ro
-from spherical_harmonics import spherical_harmonics as sh
+from spherical_harmonics import sph_harm as sh
 from losses.loss_functions import cosine_similarity_module
 
 rng = np.random.default_rng(882723)
@@ -130,8 +130,10 @@ def generate_validation_image(model, model_class, valid_dataset):
         image_array = np.concatenate([validation_images, gt_images], axis=0)
         # image_array = np.concatenate([image_array, heatmap_image], axis=1)
 
-        image_caption = "Top row : Inference. Bottom: GT.\n\
-        Left to right: Render, Shading, Light directions."
+        image_caption = (
+            "Top row : Inference. Bottom: GT.\n        Left to right: Render, Shading,"
+            " Light directions."
+        )
 
         return image_array, image_caption
 
