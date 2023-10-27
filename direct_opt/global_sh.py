@@ -69,7 +69,7 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
                 sh_coeff, feats, train_dl.dataset
             )
             cumu_loss += batch_train_loss.item()
-            cumu_psnr = batch_psnr
+            cumu_psnr += batch_psnr
 
             # Optimization step
             optimizer.zero_grad()
@@ -88,10 +88,11 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
             # 🐝 Log train metrics to wandb
             wandb.log(metrics)
 
+    # Epoch metrics
     avg_batch_loss = cumu_loss / len(train_dl)
     avg_psnr = cumu_psnr / len(train_dl)
-
-    return avg_batch_loss, avg_psnr
+    epoch_metrics = {"train/avg_loss": avg_batch_loss, "train/avg_psnr": avg_psnr}
+    wandb.log(epoch_metrics)
 
 
 def validate_model(sh_coeff, valid_dl):
@@ -101,8 +102,6 @@ def validate_model(sh_coeff, valid_dl):
         sh_coeff (torch.Tensor): tensor of second order spherical harmonics coefficients
         valid_dl (torch.Dataloader): dataloader of the validation dataset
 
-    Returns:
-        Average validation loss and average PSNR, as floats
     """
     val_loss_acc = 0.0
     val_psnr_acc = 0.0
@@ -114,14 +113,19 @@ def validate_model(sh_coeff, valid_dl):
             samples_in_batch = feats.size(0)
 
             # Forward pass
-            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, valid_dl.dataset)
+            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, type(valid_dl.dataset))
 
             val_loss_acc += val_loss.item() * samples_in_batch
             val_psnr_acc += val_psnr * samples_in_batch
 
     samples_in_set = len(valid_dl.dataset)
 
-    return val_loss_acc / samples_in_set, val_psnr_acc / samples_in_set
+    # Log the metrics
+    val_metrics = {
+        "val/loss": val_loss_acc / samples_in_set,
+        "val/psnr": val_psnr_acc / samples_in_set,
+    }
+    wandb.log(val_metrics)
 
 
 def nornalize_to_canonical_range(x):
@@ -161,10 +165,10 @@ def render_pixel_from_sh(
     return (pixel, shading) if return_shading else pixel
 
 
-def do_forward_pass(sh_coeff, feats, dataset):
+def do_forward_pass(sh_coeff, feats, dataset_type):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
 
-    gt_rgb, albedo, _, normals = dataset.unpack_item_batch(feats)
+    gt_rgb, albedo, _, normals = dataset_type.unpack_item_batch(feats)
 
     # render pixel with SH:
     # NOTE: We should broadcast the coeffs to num of normals here,
@@ -183,7 +187,7 @@ def do_forward_pass(sh_coeff, feats, dataset):
 def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_dataset):
     """Generate an image comparing a ground truth image
     with one generated using the model.
-    model: MLP which outputs light direction vectors"""
+    """
     sh_coeff.requires_grad_(False)
     with torch.inference_mode():
         # Randomly choose which image from the validation set to reconstruct
@@ -322,40 +326,64 @@ def get_dataset(config, split="train"):
     )
 
 
+# Load datasets outside of run loop
+train_dataset = get_dataset(config)
+valid_dataset = get_dataset(config, split="val")
+test_dataset = get_dataset(config, split="test")
+
+
 def main():
+    # Training Set
     train_dl = get_dataloader(
-        get_dataset(config),
+        train_dataset,
         batch_size=wandb.config["batch_size"],
         subset_fraction=1,
     )
     assert isinstance(train_dl.dataset, IntrinsicDataset) or isinstance(
         train_dl.dataset, OLATDataset
     )  # appease the type checker
-    logger.info(f"Frames: {train_dl.dataset.num_frames}.")
+    logger.info(f"Training Frames: {train_dl.dataset.num_frames}.")
     logger.info(
         f"Loaded train dataset with {len(train_dl)}"
         f" batches and {len(train_dl.dataset)} samples"
         f" and {train_dl.dataset.num_frames} frames."
     )
 
-    valid_dl = get_dataloader(  # noqa: F841
-        get_dataset(config, split="val"),
+    # Validation Set
+    valid_dl = get_dataloader(
+        valid_dataset,
         batch_size=wandb.config["batch_size"],
         subset_fraction=1,
     )
-
     assert isinstance(valid_dl.dataset, IntrinsicDataset) or isinstance(
         valid_dl.dataset, OLATDataset
     )  # appease the type checker
-    logger.info(f"Frames: {valid_dl.dataset.num_frames}.")
+    logger.info(f"Validation Frames: {valid_dl.dataset.num_frames}.")
     logger.info(
-        f"Loaded valid dataset with {len(train_dl)}"
+        f"Loaded validation dataset with {len(valid_dl)}"
         f" batches and {len(valid_dl.dataset)} samples"
         f" and {valid_dl.dataset.num_frames} frames."
     )
 
+    # Test set
+    test_dl = get_dataloader(
+        test_dataset,
+        batch_size=wandb.config["batch_size"],
+        subset_fraction=1,
+    )
+    assert isinstance(test_dl.dataset, IntrinsicDataset) or isinstance(
+        test_dl.dataset, OLATDataset
+    )  # appease the type checker
+    logger.info(f"Frames: {test_dl.dataset.num_frames}.")
+    logger.info(
+        f"Loaded valid dataset with {len(test_dl)}"
+        f" batches and {len(test_dl.dataset)} samples"
+        f" and {test_dl.dataset.num_frames} frames."
+    )
+
     # TODO: Move this to Models
     # initialize SH coefficients
+    # TODO: Add initialization options
     sh_coeff = torch.zeros(9)
     nn.init.normal_(sh_coeff)
 
@@ -374,21 +402,17 @@ def main():
         # Set coeffs in training mode
         sh_coeff.requires_grad_()
 
-        avg_loss, avg_psnr = train_epoch(
-            epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch
-        )
-        wandb.log({"train/avg_loss": avg_loss, "train/avg_psnr": avg_psnr})
+        # Run and log the training on an epoch
+        train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch)
 
-        avg_val_loss, avg_val_psnr = validate_model(sh_coeff, valid_dl)
-
-        val_metrics = {
-            "val/loss": avg_val_loss,
-            "val/psnr": avg_val_psnr,
-        }
-        wandb.log(val_metrics)
+        # Run and log the validation of the model after epoch
+        validate_model(sh_coeff, valid_dl)
 
         # Render a validation image and log it to wandb
         generate_validation_artefacts_from_global_sh(epoch, sh_coeff, valid_dl.dataset)
+
+    # Compute the test error and metrics
+    # TODO: Add test metric loop
 
     # Save the coefficients produced
     coeff_table = wandb.Table(columns=[f"C{i}" for i in range(9)])
@@ -396,21 +420,12 @@ def main():
     wandb.log({"SH Coefficinets": coeff_table})
 
 
-enable_wandb = True
-
 if __name__ == "__main__":
-    wandb.config = {
-        "epochs": 1,
-        "batch_size": 1024,
-    }
-    if enable_wandb:
-        wandb.login()
+    wandb.login()
 
-        with wandb.init(project="direct-opt-global-sh") as run:
-            wandb.config = {
-                "epochs": 1,
-                "batch_size": 1024,
-            }
-            main()
-    else:
+    with wandb.init(project="direct-opt-global-sh") as run:
+        wandb.config = {
+            "epochs": 5,
+            "batch_size": 1024,
+        }
         main()
