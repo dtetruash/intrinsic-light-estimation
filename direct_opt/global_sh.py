@@ -183,6 +183,44 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
     return train_loss, train_psnr
 
 
+def visualize_scene(frame_number, sh_coeff, dataset):
+    # Make top row of infered images
+    # load attributes of this validation image
+    gt_attributes, occupancy_mask = dataset.get_frame_decomposition(frame_number)
+
+    _, albedo, _, world_normals = gt_attributes
+
+    val_render_pixels, val_shading = render_pixel_from_sh(
+        sh_coeff.numpy(),
+        world_normals.numpy(),
+        albedo.numpy(),
+        torch_mode=False,
+        return_shading=True,
+    )
+
+    assert dataset.dim is not None
+    W, H = dataset.dim
+
+    val_render_image = ro.reconstruct_image(
+        W, H, val_render_pixels, occupancy_mask, add_alpha=True
+    )
+
+    val_shading = np.clip(
+        val_shading, 0.0, 1.0
+    )  # Clip the shading for proper visualization.
+    val_shading_image = ro.reconstruct_image(
+        W, H, val_shading, occupancy_mask, add_alpha=True
+    )
+
+    # Stick them together
+    gt_render_image, _, gt_shading_image, _ = dataset.get_frame_images(frame_number)
+
+    shading_col = np.concatenate([val_shading_image, gt_shading_image], axis=0)
+    render_col = np.concatenate([val_render_image, gt_render_image], axis=0)
+
+    return shading_col, render_col
+
+
 # TODO: move to image gen
 def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_dataset):
     """Generate an image comparing a ground truth image
@@ -213,25 +251,6 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         )
         # END SH VIS ON SPHERE
 
-        # Make top row of infered images
-        # load attributes of this validation image
-        gt_attributes, occupancy_mask = valid_dataset.get_frame_decomposition(
-            front_frame
-        )
-
-        _, albedo, _, world_normals = gt_attributes
-
-        # NOTE: This returns unplipped shading for debuging.
-        val_render_pixels, val_shading = render_pixel_from_sh(
-            sh_coeff.numpy(),
-            world_normals.numpy(),
-            albedo.numpy(),
-            torch_mode=False,
-            return_shading=True,
-        )
-
-        ic(val_render_pixels.dtype, val_shading.dtype)
-
         # HISTOGRAM OF SHADING
         logger.info("Making shading values histogram...")
         sh_values, _ = evaluate_SH_on_sphere(sh_coeff.numpy())
@@ -245,69 +264,28 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         logger.info("Done.")
         # END HISTOGRAM
 
-        assert valid_dataset.dim is not None
-        W, H = valid_dataset.dim
-
-        val_render_image = ro.reconstruct_image(
-            W, H, val_render_pixels, occupancy_mask, add_alpha=True
+        # RENDER IMAGES OF SCENE
+        front_shading, front_render = visualize_scene(
+            front_frame, sh_coeff, test_dataset
         )
+        back_shading, back_render = visualize_scene(back_frame, sh_coeff, test_dataset)
+        shading_image_array = np.concatenate([front_shading, back_shading], axis=1)
+        render_image_array = np.concatenate([front_render, back_render], axis=1)
 
-        # FIXME: Add the noramlization procedure here later?
-        val_shading = np.clip(
-            val_shading, 0.0, 1.0
-        )  # Clip the shading for proper visualization.
-        val_shading_image = ro.reconstruct_image(
-            W, H, val_shading, occupancy_mask, add_alpha=True
+        image_caption = f"Top: Inference. Bottom: GT.\n(After epoch {val_step})."
+
+        shading_image = wandb.Image(
+            shading_image_array, caption="Clipped Shading Images\n" + image_caption
         )
-
-        ic(
-            val_render_image.min(),
-            val_render_image.max(),
-            val_render_image.dtype,
-            val_render_image.shape,
+        render_image = wandb.Image(
+            render_image_array, caption="Renreded Images\n" + image_caption
         )
-        ic(
-            val_shading_image.min(),
-            val_shading_image.max(),
-            val_shading_image.dtype,
-            val_shading_image.shape,
-        )
-
-        # Stick them together
-        validation_row = np.concatenate([val_render_image, val_shading_image], axis=1)
-
-        # Make bottom row of gt images
-        gt_render_image, _, gt_shading_image, _ = valid_dataset.get_frame_images(
-            front_frame
-        )
-
-        ic(
-            gt_render_image.min(),
-            gt_render_image.max(),
-            gt_render_image.dtype,
-        )
-
-        ic(
-            gt_shading_image.min(),
-            gt_shading_image.max(),
-            gt_shading_image.dtype,
-        )
-
-        gt_row = np.concatenate([gt_render_image, gt_shading_image], axis=1)
-
-        image_array = np.concatenate([validation_row, gt_row], axis=0)
-
-        image_caption = (
-            "Top row : Inference. Bottom: GT.\n"
-            "Left to right: Render, Shading.\n"
-            f"(After epoch {val_step})."
-        )
-
-        val_image = wandb.Image(image_array, caption=image_caption)
 
         val_metrics = {
-            "val/images": val_image,
+            "val/shading_images": shading_image,
+            "val/render_images": render_image,
         }
+
         wandb.log(val_metrics)
 
 
