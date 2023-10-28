@@ -190,18 +190,11 @@ def visualie_SH_on_3D_sphere(
         bg_color (str): figure background color
         show_extremes (bool): highligh values outside [0,1] with red and blue resp.
     """
-
-    # Prepare the data
-    cart_normals = meshgrid_to_matrix(*get_sphere_surface_cartesian(resolution))
-    ic(cart_normals.shape)
-
     # Calculate the spherical harmonic Y(l,m)
-    fcolors = render_second_order_SH(
-        sh_coeffs, cart_normals.T, torch_mode=False
-    ).reshape(resolution, resolution)
-    ic(fcolors.shape, fcolors.min(), fcolors.max())
+    surface_values, surface_points = evaluate_SH_on_sphere(sh_coeffs, resolution)
+    surface_values = surface_values.reshape(resolution, resolution)
 
-    surface_points = matrix_to_meshgrid(cart_normals, res=resolution)
+    ic(surface_values.shape, surface_values.min(), surface_values.max())
 
     fig = plt.figure()
     axes_kwargs = {"projection": "3d", "computed_zorder": False}
@@ -211,7 +204,7 @@ def visualie_SH_on_3D_sphere(
         plot_SH_sphere_on_axis(
             ax,
             surface_points,
-            fcolors,
+            surface_values,
             camera_orientations[i],
             draw_gizmos,
             bg_color,
@@ -219,6 +212,14 @@ def visualie_SH_on_3D_sphere(
         )
 
     return fig
+
+
+def evaluate_SH_on_sphere(sh_coeffs, resolution=100):
+    mesh_grid = get_sphere_surface_cartesian(resolution)
+    cart_normals = meshgrid_to_matrix(*mesh_grid)
+
+    # Calculate the spherical harmonic Y(l,m)
+    return render_second_order_SH(sh_coeffs, cart_normals.T, torch_mode=False), mesh_grid
 
 
 def visualize_SH_validation_with_scipy():

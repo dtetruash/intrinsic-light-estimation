@@ -28,7 +28,7 @@ from log import get_logger
 from losses.metrics import psnr
 from rich.traceback import install as install_rich
 from spherical_harmonics.sph_harm import render_second_order_SH
-from spherical_harmonics.visualize import visualie_SH_on_3D_sphere
+from spherical_harmonics.visualize import visualie_SH_on_3D_sphere, evaluate_SH_on_sphere
 from tqdm import tqdm
 
 install_rich()
@@ -192,12 +192,31 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
     with torch.inference_mode():
         # Randomly choose which image from the validation set to reconstruct
         # frame_number = rng.integers(valid_dataset.num_frames)
-        frame_number = 39
+        vis_split = config.get("visualization", "split", fallback="test")
+        front_frame, back_frame, *_ = [
+            int(i)
+            for i in config.get("visualization", "indexes", fallback="39,89").split(",")
+        ]
+
+        # SH VIS ON SPHERE
+        R_front = get_camera_orientation(front_frame, split=vis_split)
+        R_back = get_camera_orientation(back_frame, split=vis_split)
+        fig = visualie_SH_on_3D_sphere(
+            sh_coeff.numpy(), camera_orientations=[R_front, R_back], show_extremes=True
+        )
+        wandb.log(
+            {
+                "val/vis_sh": wandb.Image(
+                    fig, caption=f"SH sphere after {val_step} epochs."
+                )
+            }
+        )
+        # END SH VIS ON SPHERE
 
         # Make top row of infered images
         # load attributes of this validation image
         gt_attributes, occupancy_mask = valid_dataset.get_frame_decomposition(
-            frame_number
+            front_frame
         )
 
         _, albedo, _, world_normals = gt_attributes
@@ -215,9 +234,9 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
 
         # HISTOGRAM OF SHADING
         logger.info("Making shading values histogram...")
-        ic(val_shading.shape, val_shading.min(), val_shading.max(), val_shading.dtype)
+        sh_values, _ = evaluate_SH_on_sphere(sh_coeff.numpy())
         shading_table = wandb.Table(
-            data=list(enumerate(val_shading)), columns=["pixel_num", "shading"]
+            data=list(enumerate(sh_values)), columns=["pixel_num", "shading"]
         )
         histogram = wandb.plot.histogram(
             shading_table, value="shading", title="Unclipped Shading rendered values."
@@ -225,21 +244,6 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         wandb.log({"val/shading_hist": histogram})
         logger.info("Done.")
         # END HISTOGRAM
-
-        # SH VIS ON SPHERE
-        R_front = get_camera_orientation(frame_number)
-        R_back = get_camera_orientation(89)
-        fig = visualie_SH_on_3D_sphere(
-            sh_coeff.numpy(), camera_orientations=[R_front, R_back], show_extremes=True
-        )
-        wandb.log(
-            {
-                "val/vis_sh": wandb.Image(
-                    fig, caption=f"SH sphere after {val_step} epochs."
-                )
-            }
-        )
-        # END SH VIS ON SPHERE
 
         assert valid_dataset.dim is not None
         W, H = valid_dataset.dim
@@ -274,7 +278,7 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
 
         # Make bottom row of gt images
         gt_render_image, _, gt_shading_image, _ = valid_dataset.get_frame_images(
-            frame_number
+            front_frame
         )
 
         ic(
