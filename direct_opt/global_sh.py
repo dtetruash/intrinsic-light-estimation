@@ -3,6 +3,7 @@ to be able to reproduce global illumination, foregoing an MLP core.
 """
 
 import math
+from matplotlib import pyplot as plt
 
 import numpy as np
 import torch
@@ -230,7 +231,9 @@ def visualize_scene(frame_number, sh_coeff, dataset):
 
 
 # TODO: move to image gen
-def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, test_dataset):
+def generate_validation_artefacts_from_global_sh(
+    val_step, sh_coeff, test_dataset, shading_histogram_data
+):
     """Generate and log post-epoch metrics and visualizations
 
     Args:
@@ -263,18 +266,9 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, test_datase
         )
         # END SH VIS ON SPHERE
 
-        # HISTOGRAM OF SHADING
-        # TODO: Update the histogram with data after each epoch.
-        logger.info("Making shading values histogram...")
+        # HISTOGRAM OF SHADING DATA
         sh_values, _ = evaluate_SH_on_sphere(sh_coeff.numpy())
-        shading_table = wandb.Table(
-            data=list(enumerate(sh_values)), columns=["pixel_num", "shading"]
-        )
-        histogram = wandb.plot.histogram(
-            shading_table, value="shading", title="Unclipped Shading rendered values."
-        )
-        wandb.log({"val/shading_hist": histogram})
-        logger.info("Done.")
+        shading_histogram_data.append(sh_values)
         # END HISTOGRAM
 
         # RENDER IMAGES OF SCENE
@@ -417,10 +411,25 @@ def experiment_run():
         validate_model(sh_coeff, valid_dl)
 
         # Render a validation image and log it to wandb
-        generate_validation_artefacts_from_global_sh(epoch, sh_coeff, test_dataset)
+        generate_validation_artefacts_from_global_sh(
+            epoch, sh_coeff, test_dataset, shading_histogram_data
+        )
 
     # Compute the test error and metrics
     # TODO: Add test metric loop
+
+    # Histogram plotting
+    shading_histogram_data = np.stack(shading_histogram_data, axis=1)
+    ic(shading_histogram_data.shape)
+    logger.info("Making shading values histogram...")
+    fig, ax = plt.subplots()
+    ax.hist(
+        shading_histogram_data,
+        stacked=True,
+        label=[f"Epoch {i}" for i in range(wandb.config["epochs"])],
+    )
+    wandb.log({"val/shading_hist": fig})
+    logger.info("Done.")
 
     # Ceoff evolution plot:
     column_names = [f"C{i}" for i in range(len(sh_coeff))]
