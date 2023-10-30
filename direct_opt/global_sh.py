@@ -2,6 +2,7 @@
 to be able to reproduce global illumination, foregoing an MLP core.
 """
 
+from matplotlib import pyplot as plt
 import math
 
 import numpy as np
@@ -44,7 +45,9 @@ Config.log_config(logger)
 ic.configureOutput(outputFunction=lambda s: logger.info(s))
 
 
-def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
+def train_epoch(
+    epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch, coeff_evolution_data
+):
     cumu_loss = 0.0
     cumu_psnr = 0.0
     pbar = tqdm(
@@ -78,11 +81,17 @@ def train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch):
 
         # Collect metrics
         epoch_step = batch + 1 + (n_batches_per_epoch * epoch)
+        epoch_progress = epoch_step / n_batches_per_epoch
         metrics = {
             "train/train_loss": batch_train_loss,
             "train/train_psnr": batch_psnr,
-            "train/epoch": epoch_step / n_batches_per_epoch,
+            "train/epoch": epoch_progress,
         }
+
+        # Log the evolution of the coeffs themselves for later
+        if batch % 40 == 0:
+            coeff_evolution_data["xs"].append(epoch_progress)
+            coeff_evolution_data["ys"].append(sh_coeff.clone().detach().numpy())
 
         if batch + 1 < n_batches_per_epoch:
             # 🐝 Log train metrics to wandb
@@ -222,9 +231,13 @@ def visualize_scene(frame_number, sh_coeff, dataset):
 
 
 # TODO: move to image gen
-def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_dataset):
-    """Generate an image comparing a ground truth image
-    with one generated using the model.
+def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, test_dataset):
+    """Generate and log post-epoch metrics and visualizations
+
+    Args:
+        val_step (int): epoch index
+        sh_coeff (tensor): tensor of SH coefficients
+        test_dataset (dataset object): dataset to source visualization frames from
     """
     sh_coeff.requires_grad_(False)
     with torch.inference_mode():
@@ -232,7 +245,7 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         # frame_number = rng.integers(valid_dataset.num_frames)
         vis_split = config.get("visualization", "split", fallback="test")
         front_frame, back_frame, *_ = [
-            int(i)
+            int(i.strip())
             for i in config.get("visualization", "indexes", fallback="39,89").split(",")
         ]
 
@@ -244,14 +257,15 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         )
         wandb.log(
             {
-                "val/vis_sh": wandb.Image(
-                    fig, caption=f"SH sphere after {val_step} epochs."
+                "vis/sh_sphere": wandb.Image(
+                    fig, caption=f"SH Evaluation on sphere after epoch {val_step}."
                 )
             }
         )
         # END SH VIS ON SPHERE
 
         # HISTOGRAM OF SHADING
+        # TODO: Update the histogram with data after each epoch.
         logger.info("Making shading values histogram...")
         sh_values, _ = evaluate_SH_on_sphere(sh_coeff.numpy())
         shading_table = wandb.Table(
@@ -282,8 +296,8 @@ def generate_validation_artefacts_from_global_sh(val_step, sh_coeff, valid_datas
         )
 
         val_metrics = {
-            "val/shading_images": shading_image,
-            "val/render_images": render_image,
+            "vis/shading_images": shading_image,
+            "vis/render_images": render_image,
         }
 
         wandb.log(val_metrics)
@@ -316,7 +330,7 @@ valid_dataset = get_dataset(config, split="val")
 test_dataset = get_dataset(config, split="test")
 
 
-def main():
+def experiment_run():
     # Training Set
     train_dl = get_dataloader(
         train_dataset,
@@ -367,7 +381,7 @@ def main():
 
     # TODO: Move this to Models
     # initialize SH coefficients
-    # TODO: Add initialization options
+    # TODO: Add initialization options (experiemnt configs)
     sh_coeff = torch.zeros(9)
     nn.init.normal_(sh_coeff)
 
@@ -376,6 +390,10 @@ def main():
     optimizer = torch.optim.RMSprop([sh_coeff])
 
     n_batches_per_epoch = math.ceil(len(train_dl.dataset) / wandb.config["batch_size"])
+
+    # Make table to hold post-epoch coeffs
+    coeff_evolution_data = {"xs": [], "ys": []}
+    shading_histogram_data = []
 
     # for each epoch, for each batch,
     # render the pixel using the normal and the coeficients of the SH,
@@ -387,7 +405,14 @@ def main():
         sh_coeff.requires_grad_()
 
         # Run and log the training on an epoch
-        train_epoch(epoch, train_dl, sh_coeff, optimizer, n_batches_per_epoch)
+        train_epoch(
+            epoch,
+            train_dl,
+            sh_coeff,
+            optimizer,
+            n_batches_per_epoch,
+            coeff_evolution_data,
+        )
 
         # Run and log the validation of the model after epoch
         validate_model(sh_coeff, valid_dl)
@@ -398,10 +423,34 @@ def main():
     # Compute the test error and metrics
     # TODO: Add test metric loop
 
+    # Ceoff evolution plot:
+    xs = coeff_evolution_data["xs"]
+    ys = [list(line) for line in np.stack(coeff_evolution_data["ys"]).T]
+    fig, ax = plt.subplots()
+    for i in range(9):
+        ax.plot(xs, ys[i])
+    plt.show()
+
+    column_names = [f"C{i}" for i in range(len(sh_coeff))]
+    wandb.log(
+        {
+            "train/coeff_evolution": wandb.plot.line_series(
+                xs,
+                ys,
+                keys=column_names,
+                title="Coefficient Evolution",
+                xname="Epoch",
+            )
+        }
+    )
+
     # Save the coefficients produced
-    coeff_table = wandb.Table(columns=[f"C{i}" for i in range(9)])
-    coeff_table.add_data(*list(sh_coeff.numpy()))
-    wandb.log({"SH Coefficinets": coeff_table})
+    # FIXME: Should index theses with the Y_lm notation
+    optimized_coeff_table = wandb.Table(columns=column_names)
+    optimized_coeff_table.add_data(
+        *list(sh_coeff.numpy())
+    )  # Only add the optimized values
+    wandb.log({"Post-training SH Coefficinets": optimized_coeff_table})
 
 
 if __name__ == "__main__":
@@ -409,7 +458,7 @@ if __name__ == "__main__":
 
     with wandb.init(project="direct-opt-global-sh") as run:
         wandb.config = {
-            "epochs": 5,
+            "epochs": 1,
             "batch_size": 1024,
         }
-        main()
+        experiment_run()
