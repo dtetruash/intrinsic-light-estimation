@@ -2,7 +2,6 @@
 to be able to reproduce global illumination, foregoing an MLP core.
 """
 
-from matplotlib import pyplot as plt
 import math
 
 import numpy as np
@@ -424,19 +423,12 @@ def experiment_run():
     # TODO: Add test metric loop
 
     # Ceoff evolution plot:
-    xs = coeff_evolution_data["xs"]
-    ys = [list(line) for line in np.stack(coeff_evolution_data["ys"]).T]
-    fig, ax = plt.subplots()
-    for i in range(9):
-        ax.plot(xs, ys[i])
-    plt.show()
-
     column_names = [f"C{i}" for i in range(len(sh_coeff))]
     wandb.log(
         {
             "train/coeff_evolution": wandb.plot.line_series(
-                xs,
-                ys,
+                coeff_evolution_data["xs"],
+                np.stack(coeff_evolution_data["ys"]).T,
                 keys=column_names,
                 title="Coefficient Evolution",
                 xname="Epoch",
