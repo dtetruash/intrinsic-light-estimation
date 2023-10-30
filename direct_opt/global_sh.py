@@ -89,10 +89,9 @@ def train_epoch(
         }
 
         # Log the evolution of the coeffs themselves for later
-        if batch % 50 == 0:
+        if epoch_step % 50 == 0:
             coeff_evolution_data["xs"].append(epoch_progress)
             coeff_evolution_data["ys"].append(sh_coeff.clone().detach().cpu().numpy())
-            # coeff_evolution_data["ys"].append(np.array([epoch_progress] * 9))
 
         if batch + 1 < n_batches_per_epoch:
             # 🐝 Log train metrics to wandb
