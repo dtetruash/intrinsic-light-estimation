@@ -4,6 +4,8 @@ to be able to reproduce global illumination, foregoing an MLP core.
 
 import math
 from matplotlib import pyplot as plt
+from rich.table import Table as RichTable
+from rich.console import Console
 
 import numpy as np
 import torch
@@ -14,7 +16,6 @@ import wandb
 import wandb.plot
 from data_loaders import olat_render as ro
 from data_loaders.datasets import (
-    IntrinsicDataset,
     IntrinsicDiffuseDataset,
     IntrinsicGlobalDataset,
     OLATDataset,
@@ -61,7 +62,7 @@ def train_epoch(
 
     for batch, item in pbar:
         # Decompose items in dataset
-        feats, _ = unpack_item(item, type(train_dl.dataset))
+        feats, _ = unpack_item(item, type(train_dataset))
 
         # Move to device
         feats = feats.to(device)
@@ -69,7 +70,7 @@ def train_epoch(
         with torch.autograd.anomaly_mode.detect_anomaly():
             # forward pass
             batch_train_loss, batch_psnr = do_forward_pass(
-                sh_coeff, feats, train_dl.dataset
+                sh_coeff, feats, type(train_dataset)
             )
             cumu_loss += batch_train_loss.item()
             cumu_psnr += batch_psnr
@@ -116,13 +117,13 @@ def validate_model(sh_coeff, valid_dl):
     val_psnr_acc = 0.0
     with torch.inference_mode():
         for item in tqdm(valid_dl, desc="Validating model", total=len(valid_dl)):
-            feats, _ = unpack_item(item, type(valid_dl.dataset))
+            feats, _ = unpack_item(item, type(valid_dataset))
 
             feats = feats.to(device)
             samples_in_batch = feats.size(0)
 
             # Forward pass
-            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, type(valid_dl.dataset))
+            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, type(valid_dataset))
 
             val_loss_acc += val_loss.item() * samples_in_batch
             val_psnr_acc += val_psnr * samples_in_batch
@@ -324,59 +325,62 @@ test_dataset = get_dataset(config, split="test")
 
 
 def experiment_run():
+    subset_fraction = wandb.config["subset_fraction"]
+    logger.info(f"Training using {1.0/subset_fraction*100:.2f}% of the data.")
+
     # Training Set
     train_dl = get_dataloader(
         train_dataset,
         batch_size=wandb.config["batch_size"],
-        subset_fraction=1,
+        subset_fraction=subset_fraction,
     )
-    assert isinstance(train_dl.dataset, IntrinsicDataset) or isinstance(
-        train_dl.dataset, OLATDataset
-    )  # appease the type checker
-    logger.info(f"Training Frames: {train_dl.dataset.num_frames}.")
     logger.info(
-        f"Loaded train dataset with {len(train_dl)}"
-        f" batches and {len(train_dl.dataset)} samples"
-        f" and {train_dl.dataset.num_frames} frames."
+        f"Train dataloader with {len(train_dl)} batches"
+        f" and {len(train_dl.dataset)}/{len(train_dataset)} samples"
+        f" from {train_dataset.num_frames} frames."
     )
 
     # Validation Set
     valid_dl = get_dataloader(
         valid_dataset,
         batch_size=wandb.config["batch_size"],
-        subset_fraction=1,
+        subset_fraction=subset_fraction,
     )
-    assert isinstance(valid_dl.dataset, IntrinsicDataset) or isinstance(
-        valid_dl.dataset, OLATDataset
-    )  # appease the type checker
-    logger.info(f"Validation Frames: {valid_dl.dataset.num_frames}.")
     logger.info(
-        f"Loaded validation dataset with {len(valid_dl)}"
-        f" batches and {len(valid_dl.dataset)} samples"
-        f" and {valid_dl.dataset.num_frames} frames."
+        f"Loaded validation dataloader with {len(valid_dl)} batches"
+        f" and {len(valid_dl.dataset)}/{len(valid_dataset)} samples"
+        f" from {valid_dataset.num_frames} frames."
     )
 
     # Test set
     test_dl = get_dataloader(
         test_dataset,
         batch_size=wandb.config["batch_size"],
-        subset_fraction=1,
+        subset_fraction=subset_fraction,
     )
-    assert isinstance(test_dl.dataset, IntrinsicDataset) or isinstance(
-        test_dl.dataset, OLATDataset
-    )  # appease the type checker
-    logger.info(f"Frames: {test_dl.dataset.num_frames}.")
     logger.info(
-        f"Loaded valid dataset with {len(test_dl)}"
-        f" batches and {len(test_dl.dataset)} samples"
-        f" and {test_dl.dataset.num_frames} frames."
+        f"Loaded test dataset with {len(test_dl)} batches"
+        f" and {len(test_dl.dataset)}/{len(test_dataset)} samples"
+        f" from {test_dataset.num_frames} frames."
     )
+
+    # Populate the table with data
 
     # TODO: Move this to Models
     # initialize SH coefficients
     # TODO: Add initialization options (experiemnt configs)
-    sh_coeff = torch.zeros(9)
+    sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
     nn.init.normal_(sh_coeff)
+    logger.info("Inigializing Spherical Harmonics coefficients to:")
+    logger.info(sh_coeff)
+
+    column_names = [f"C{i}" for i in range(len(sh_coeff))]
+
+    # Create a Rich Table to dislay SH coeffs  at the end
+    sh_coeff_display_table = RichTable("Row", *column_names, title="SH Coefficients")
+    sh_coeff_display_table.add_row(
+        "Initial", *[f"{float(c):.3f}" for c in sh_coeff.tolist()]
+    )
 
     # TODO: Add LR scheduling
     # Set the coeffs as parameters for optimization
@@ -422,17 +426,21 @@ def experiment_run():
     shading_histogram_data = np.stack(shading_histogram_data, axis=1)
     ic(shading_histogram_data.shape)
     logger.info("Making shading values histogram...")
-    fig, ax = plt.subplots()
-    ax.hist(
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+    _, bins, _ = ax.hist(
         shading_histogram_data,
         stacked=True,
+        histtype="bar",
+        ec="black",
         label=[f"Epoch {i}" for i in range(wandb.config["epochs"])],
     )
-    wandb.log({"val/shading_hist": fig})
+    ax.set_xticks(bins)
+    ax.legend(prop={"size": 10})
+    ax.set_title(r"Shading values over $S^2$")
+    wandb.log({"val/shading_hist": wandb.Image(fig)})
     logger.info("Done.")
 
     # Ceoff evolution plot:
-    column_names = [f"C{i}" for i in range(len(sh_coeff))]
     wandb.log(
         {
             "train/coeff_evolution": wandb.plot.line_series(
@@ -453,13 +461,16 @@ def experiment_run():
     )  # Only add the optimized values
     wandb.log({"Post-training SH Coefficinets": optimized_coeff_table})
 
+    sh_coeff_display_table.add_row(
+        "Optimized", *[f"{float(c):.3f}" for c in sh_coeff.tolist()]
+    )
+    Console().print(sh_coeff_display_table)
+
 
 if __name__ == "__main__":
     wandb.login()
 
-    with wandb.init(project="direct-opt-global-sh") as run:
-        wandb.config = {
-            "epochs": 1,
-            "batch_size": 1024,
-        }
-        experiment_run()
+    for _ in range(10):
+        with wandb.init(project="direct-opt-global-sh") as run:
+            wandb.config = {"epochs": 1, "batch_size": 1024, "subset_fraction": 10}
+            experiment_run()
