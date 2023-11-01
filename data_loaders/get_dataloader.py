@@ -2,7 +2,9 @@ import torch
 import torch.utils.data
 
 
-def get_dataloader(full_dataset, batch_size=2**8, split="train", subset_fraction=1):
+def get_dataloader(
+    full_dataset, batch_size=2**8, split="train", subset_fraction=1, shuffle=None
+):
     """[TODO:description]
 
     Args:
@@ -10,6 +12,7 @@ def get_dataloader(full_dataset, batch_size=2**8, split="train", subset_fraction
         batch_size ([TODO:parameter]): size of batches in loader
         split (str): which split to load (train, val, or test)
         subset_fraction (int): Load only every nth sample
+        shuffle (bool or None): Shuffle override. If None, we only shuffle the train split.
 
     Returns:
         Torch dataloader with a Torch subset (even if subset_fraction=1) of the full dataset
@@ -19,6 +22,8 @@ def get_dataloader(full_dataset, batch_size=2**8, split="train", subset_fraction
 
     assert isinstance(full_dataset, torch.utils.data.Dataset)
     is_train = split == "train"
+    if shuffle is None:
+        shuffle = is_train
 
     sub_dataset = torch.utils.data.Subset(
         full_dataset, indices=range(0, len(full_dataset), subset_fraction)
@@ -27,7 +32,7 @@ def get_dataloader(full_dataset, batch_size=2**8, split="train", subset_fraction
     loader = torch.utils.data.DataLoader(
         dataset=sub_dataset,
         batch_size=batch_size,
-        shuffle=is_train,
+        shuffle=shuffle,
         pin_memory=True,
         num_workers=0,
     )

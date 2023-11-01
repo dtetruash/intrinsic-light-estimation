@@ -10,7 +10,6 @@ from rich.console import Console
 import numpy as np
 import torch
 import torch.autograd.anomaly_mode
-import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 import wandb.plot
@@ -90,7 +89,7 @@ def train_epoch(
         }
 
         # Log the evolution of the coeffs themselves for later
-        if epoch_step % 50 == 0:
+        if epoch_step % 50 == 1:
             coeff_evolution_data["xs"].append(epoch_progress)
             coeff_evolution_data["ys"].append(sh_coeff.clone().detach().cpu().numpy())
 
@@ -333,6 +332,7 @@ def experiment_run():
         train_dataset,
         batch_size=wandb.config["batch_size"],
         subset_fraction=subset_fraction,
+        shuffle=False,
     )
     logger.info(
         f"Train dataloader with {len(train_dl)} batches"
@@ -370,7 +370,7 @@ def experiment_run():
     # initialize SH coefficients
     # TODO: Add initialization options (experiemnt configs)
     sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
-    nn.init.normal_(sh_coeff)
+    # nn.init.normal_(sh_coeff)
     logger.info("Inigializing Spherical Harmonics coefficients to:")
     logger.info(sh_coeff)
 
@@ -470,7 +470,20 @@ def experiment_run():
 if __name__ == "__main__":
     wandb.login()
 
-    for _ in range(10):
-        with wandb.init(project="direct-opt-global-sh") as run:
-            wandb.config = {"epochs": 1, "batch_size": 1024, "subset_fraction": 10}
+    project_name = config.get("experiment")
+
+    shuffle_train = config.getboolean("dataset", "shuffle_train")
+
+    num_epochs = config.getint("parameters", "epochs", fallback=1)
+    dataset_subset_fraction = config.getint("parameters", "subset_fraction", fallback=1)
+
+    for _ in range(20):
+        with wandb.init(
+            project="direct-opt-global-sh_NonOptBugRuns_ZeroInit_NoShuffle"
+        ) as run:
+            wandb.config = {
+                "epochs": num_epochs,
+                "batch_size": 1024,
+                "subset_fraction": dataset_subset_fraction,
+            }
             experiment_run()
