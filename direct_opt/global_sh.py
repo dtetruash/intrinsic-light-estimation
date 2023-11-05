@@ -30,6 +30,7 @@ from losses.metrics import psnr
 from rich.traceback import install as install_rich
 from spherical_harmonics.sph_harm import render_second_order_SH
 from spherical_harmonics.visualize import visualie_SH_on_3D_sphere, evaluate_SH_on_sphere
+from spherical_harmonics.sampling import sample_uniform_sphere
 from tqdm import tqdm
 
 install_rich()
@@ -187,6 +188,16 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
 
     # Compute reconstruction loss:
     train_loss = F.mse_loss(gt_rgb, pred_rgb)
+
+    # Non negativity constraint
+    if wandb.config.get("non_negativity_loss", False) is True:
+        uniform_on_sphere = sample_uniform_sphere(rng)
+        uniform_SH_evaluations = render_second_order_SH(
+            sh_coeff, torch.tensor(uniform_on_sphere)
+        )
+        non_negativity_loss = np.mean(np.square(np.minimum(0, uniform_SH_evaluations)))
+        train_loss += non_negativity_loss
+
     train_psnr = psnr(train_loss.item())
 
     return train_loss, train_psnr

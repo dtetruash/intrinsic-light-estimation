@@ -43,6 +43,11 @@ def square_to_uniform_sphere(samples):
     return cylinder_to_unit_spheroid(cyl)
 
 
+def sample_uniform_sphere(rng=None, K=1000):
+    samples = get_uniform_samples(rng, K)
+    return square_to_uniform_sphere(samples)
+
+
 if __name__ == "__main__":
     from matplotlib import pyplot as plt
 
@@ -62,8 +67,7 @@ if __name__ == "__main__":
     ax.plot_wireframe(X, Y, Z, colors="black", alpha=0.5, linestyle=":")
 
     # 1000 samples on sphere
-    samples = get_uniform_samples(K=1000)
-    sphere_samples = square_to_uniform_sphere(samples)
+    sphere_samples = sample_uniform_sphere()
     ic(sphere_samples.shape)
     ax.scatter(*sphere_samples.T)
 
