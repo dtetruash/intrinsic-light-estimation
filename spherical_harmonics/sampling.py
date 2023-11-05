@@ -53,15 +53,18 @@ if __name__ == "__main__":
     ax.set_ylim((-1, 1))
     ax.set_zlim((-1, 1))
 
+    # Validation wireframe of sphere
     theta, phi = np.linspace(0, 2 * np.pi, 50), np.linspace(0, np.pi, 50)
     THETA, PHI = np.meshgrid(theta, phi)
-    R = 1.0
-    X = R * np.sin(PHI) * np.cos(THETA)
-    Y = R * np.sin(PHI) * np.sin(THETA)
-    Z = R * np.cos(PHI)
+    X = np.sin(PHI) * np.cos(THETA)
+    Y = np.sin(PHI) * np.sin(THETA)
+    Z = np.cos(PHI)
     ax.plot_wireframe(X, Y, Z, colors="black", alpha=0.5, linestyle=":")
 
+    # 1000 samples on sphere
     samples = get_uniform_samples(K=1000)
     sphere_samples = square_to_uniform_sphere(samples)
+    ic(sphere_samples.shape)
     ax.scatter(*sphere_samples.T)
+
     plt.show()
