@@ -34,10 +34,7 @@ def square_to_uniform_sphere(samples):
         "Given samples must be 2 dementional, given were"
         f" {samples.shape[-1]} dimentional. Overall samples shape was {samples.shape}"
     )
-    ic(samples.shape)
     cyl = square_to_uniform_cylinder(samples)
-    ic(cyl.shape)
-    # heights = (2.0 * cyl[..., -1] - 1.0)[np.newaxis].T
     cyl[..., -1] *= 2.0
     cyl[..., -1] -= 1.0
     return cylinder_to_unit_spheroid(cyl)
