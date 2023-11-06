@@ -195,7 +195,13 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
         uniform_SH_evaluations = render_second_order_SH(
             sh_coeff, torch.tensor(uniform_on_sphere)
         )
-        non_negativity_loss = np.mean(np.square(np.minimum(0, uniform_SH_evaluations)))
+        non_negativity_loss = torch.mean(
+            torch.square(
+                torch.minimum(
+                    torch.zeros_like(uniform_SH_evaluations), uniform_SH_evaluations
+                )
+            )
+        )
         train_loss += non_negativity_loss
 
     train_psnr = psnr(train_loss.item())
@@ -343,7 +349,7 @@ def experiment_run():
         train_dataset,
         batch_size=wandb.config["batch_size"],
         subset_fraction=subset_fraction,
-        shuffle=False,
+        shuffle=wandb.config["shuffle_train"],
     )
     logger.info(
         f"Train dataloader with {len(train_dl)} batches"
@@ -481,20 +487,21 @@ def experiment_run():
 if __name__ == "__main__":
     wandb.login()
 
-    project_name = config.get("experiment")
+    project_name = config.get("experiment", "project_name")
+    num_runs = config.getint("experiment", "num_runs", fallback=1)
 
     shuffle_train = config.getboolean("dataset", "shuffle_train")
 
-    num_epochs = config.getint("parameters", "epochs", fallback=1)
+    num_epochs = config.getint("training", "epochs", fallback=1)
     dataset_subset_fraction = config.getint("parameters", "subset_fraction", fallback=1)
 
-    for _ in range(20):
-        with wandb.init(
-            project="direct-opt-global-sh_NonOptBugRuns_ZeroInit_NoShuffle"
-        ) as run:
+    for _ in range(num_runs):
+        with wandb.init(project=project_name) as run:
             wandb.config = {
                 "epochs": num_epochs,
                 "batch_size": 1024,
                 "subset_fraction": dataset_subset_fraction,
+                "non_negativity_loss": True,
+                "shuffle_train": shuffle_train,
             }
             experiment_run()
