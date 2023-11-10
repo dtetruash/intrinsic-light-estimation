@@ -385,7 +385,7 @@ if __name__ == "__main__":
             "data_subset_fraction": {"value": 1},
             "model_checkpoint_path": {"value": "model_checkpoints"},
             "model_trained_path": {"value": "model_trained"},
-            "scene": {"value": raster_config["paths"]["scene"]},
+            "scene": {"value": raster_config[]["scene"]},
         }
     )
 

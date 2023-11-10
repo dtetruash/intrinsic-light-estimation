@@ -30,7 +30,7 @@ def _get_light_info(config, is_single_olat=False):
     Returns:
         Dict of light names (lower case) to light locations ndarrays (3,)
     """
-    light_file_path = config.get("paths", "lights_file")
+    light_file_path = config.get(, "lights_file")
     with open(light_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
 
@@ -112,7 +112,7 @@ def gather_image_metadata(config, split="train"):
         Frame transforms dictionary, downsample ratio, number of frames to load.
     """
     with open(
-        config.get("paths", "scene_path") + f"/transforms_{split}.json", "r"
+        config.get(, "scene_path") + f"/transforms_{split}.json", "r"
     ) as tf:
         frame_transforms = json.loads(tf.read())
 
@@ -156,7 +156,7 @@ class IntrinsicDataset(Dataset):
         pixel_streams = {channel_name: [] for channel_name in channels}
         occupancy_masks = []
 
-        data_path = config.get("paths", "scene_path") + "/" + self.split
+        data_path = config.get(, "scene_path") + "/" + self.split
         logger.info(f"Loading dataset from {data_path}")
         pbar = tqdm(
             enumerate(frame_transforms["frames"]),
@@ -171,7 +171,7 @@ class IntrinsicDataset(Dataset):
                 downsample_ratio=downsample_ratio,
             )
 
-            pbar.set_description(config.get("paths", "scene") + frame["file_path"][1:])
+            pbar.set_description(config.get(, "scene") + frame["file_path"][1:])
 
             # Assuing that all images have the same dimensions.
             if self.dim is None:
@@ -322,7 +322,7 @@ class OLATDataset(Dataset):
         self._lights_info = light_locations
         self._num_lights = len(light_locations)
 
-        data_path = config.get("paths", "scene_path") + "/" + self.split
+        data_path = config.get(, "scene_path") + "/" + self.split
 
         # List of dicts of {albedo, normal}
         self._frame_attributes = []

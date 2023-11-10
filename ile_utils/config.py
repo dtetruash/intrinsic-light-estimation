@@ -26,22 +26,22 @@ class Config:
             Config.__conf.read(Config.__config_path)
 
             # Write in interpolated values.
-            Config.__conf.set("paths", "scene_path", "%(dataset_path)s/%(scene)s")
-            Config.__conf.set("paths", "data_path", "%(scene_path)s/%(split)s")
+            Config.__conf.set("dataset", "scene_path", "%(dataset_path)s/%(scene)s")
+            Config.__conf.set("dataset", "data_path", "%(scene_path)s/%(split)s")
 
-            if Config.__conf.has_option("paths", "split"):
+            if Config.__conf.has_option("dataset", "split"):
                 Config.__conf.set(
-                    "paths",
+                    "dataset",
                     "transforms_file",
                     "%(scene_path)s/transforms_%(split)s.json",
                 )
             else:
                 Config.__conf.set(
-                    "paths", "transforms_file", "%(scene_path)s/transforms.json"
+                    "dataset", "transforms_file", "%(scene_path)s/transforms.json"
                 )
 
             Config.__conf.set(
-                "paths", "lights_file", "%(scene_path)s/lights_%(scene)s.json"
+                "dataset", "lights_file", "%(scene_path)s/lights_%(scene)s.json"
             )
 
         return Config.__conf

@@ -386,11 +386,18 @@ def experiment_run():
     # TODO: Move this to Models
     # initialize SH coefficients
     # TODO: Add initialization options (experiemnt configs)
-    sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
-    # nn.init.normal_(sh_coeff)
-    logger.info("Inigializing Spherical Harmonics coefficients to:")
-    logger.info(sh_coeff)
 
+    # SH Coeffs initialization
+    init_file = wandb.config["sh_init"]
+    if init_file is None:
+        sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
+    else:
+        sh_coeff = torch.tensor(np.fromfile(init_file))
+        assert (
+            sh_coeff.shape[0] == 9
+        ), f"SH inisialization must be of length 9, was {sh_coeff.shape[0]}"
+
+    # Log initializatoin
     column_names = [f"C{i}" for i in range(len(sh_coeff))]
 
     # Create a Rich Table to dislay SH coeffs  at the end
@@ -398,6 +405,24 @@ def experiment_run():
     sh_coeff_display_table.add_row(
         "Initial", *[f"{float(c):.3f}" for c in sh_coeff.tolist()]
     )
+
+    # Initialization pertubation
+    init_perturb_strength = wandb.config["init_pertubation"]
+    if init_perturb_strength > 0:
+        pertubation = torch.rand_like(sh_coeff) * init_perturb_strength
+        sh_coeff += pertubation
+
+        sh_coeff_display_table.add_row(
+            "Pertubation", *[f"{float(c):.3f}" for c in pertubation.tolist()]
+        )
+
+        sh_coeff_display_table.add_row(
+            "Init + Pertubation", *[f"{float(c):.3f}" for c in sh_coeff.tolist()]
+        )
+
+    # nn.init.normal_(sh_coeff)
+    logger.info("Initializing Spherical Harmonics coefficients to:")
+    logger.info(sh_coeff)
 
     # TODO: Add LR scheduling
     # Set the coeffs as parameters for optimization
@@ -490,18 +515,36 @@ if __name__ == "__main__":
     project_name = config.get("experiment", "project_name")
     num_runs = config.getint("experiment", "num_runs", fallback=1)
 
+    initialization_vector_file = config.get(
+        "global_spherical_harmonics", "sh_initialization", fallback=None
+    )
+    initialization_vector_file_stem = initialization_vector_file.split("/")[-1].split(
+        "."
+    )[0]
+
+    # initialization_pertubation_strength = config.getfloat(
+    #     "experiment", "sh_initialization_purtubation", fallback=0.0
+    # )
+
     shuffle_train = config.getboolean("dataset", "shuffle_train")
 
     num_epochs = config.getint("training", "epochs", fallback=1)
     dataset_subset_fraction = config.getint("parameters", "subset_fraction", fallback=1)
 
-    for _ in range(num_runs):
-        with wandb.init(project=project_name) as run:
-            wandb.config = {
-                "epochs": num_epochs,
-                "batch_size": 1024,
-                "subset_fraction": dataset_subset_fraction,
-                "non_negativity_loss": True,
-                "shuffle_train": shuffle_train,
-            }
-            experiment_run()
+    # TODO: Move pertubation into config file.
+    for str_i, pert in enumerate(np.logspace(-3, 0, base=2, endpoint=True, num=6)):
+        for run_i in range(num_runs):
+            with wandb.init(
+                project=project_name,
+                name=f"{initialization_vector_file_stem}_purtstr{str_i}_run{run_i}",
+            ) as run:
+                wandb.config = {
+                    "epochs": num_epochs,
+                    "batch_size": 1024,
+                    "subset_fraction": dataset_subset_fraction,
+                    "non_negativity_loss": True,
+                    "shuffle_train": shuffle_train,
+                    "sh_init": initialization_vector_file,
+                    "init_pertubation": pert,
+                }
+                experiment_run()
