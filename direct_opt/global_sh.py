@@ -6,6 +6,7 @@ import math
 from matplotlib import pyplot as plt
 from rich.table import Table as RichTable
 from rich.console import Console
+import argparse
 
 import numpy as np
 import torch
@@ -36,7 +37,6 @@ from tqdm import tqdm
 install_rich()
 
 device = get_device()
-config = Config.get_config()
 rng = np.random.default_rng(882723)
 
 logger = get_logger(__file__)
@@ -313,11 +313,9 @@ def generate_validation_artefacts_from_global_sh(
         wandb.log(val_metrics)
 
 
-def get_dataset(config, split="train"):
-    dataset_option = config.get(
-        "spherical_harmonics", "dataset", fallback="intrinsic-global"
-    )
-    logger.debug(f"Dataset option is {type(dataset_option)}:{dataset_option}")
+def get_dataset(config, downsample_ratio=1, split="train"):
+    dataset_option = config.get("dataset", "type", fallback="intrinsic-global")
+    logger.debug(f"Dataset option is {dataset_option}")
 
     if dataset_option == "single_OLAT":
         return OLATDataset(config, split, is_single_olat=True)
@@ -332,12 +330,6 @@ def get_dataset(config, split="train"):
         f"Dataset option {dataset_option} is unsuported in this optimzation."
         "Use one of ['single_OLAT', 'intrinsic-diffuse', 'intrinsic-global']."
     )
-
-
-# Load datasets outside of run loop
-train_dataset = get_dataset(config)
-valid_dataset = get_dataset(config, split="val")
-test_dataset = get_dataset(config, split="test")
 
 
 def experiment_run():
@@ -512,37 +504,60 @@ def experiment_run():
 if __name__ == "__main__":
     wandb.login()
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c", "--config_path", help="Path to the config file", required=True
+    )
+
+    args = parser.parse_args()
+
+    # Readin the proper config.
+    config = Config.get_config(args.config_path)
+
+    # Experiment meta-data confids
     project_name = config.get("experiment", "project_name")
     num_runs = config.getint("experiment", "num_runs", fallback=1)
 
+    # Dataset configs
+    dataset_subset_fraction = config.getint("dataset", "subset_fraction", fallback=1)
+    dataset_downsample_ratio = config.getint("dataset", "downsample_ratio", fallback=2)
+
+    num_epochs = config.getint("training", "epochs", fallback=1)
+    shuffle_train = config.getboolean("training", "shuffle_train")
+
+    # SH configs
     initialization_vector_file = config.get(
         "global_spherical_harmonics", "sh_initialization", fallback=None
     )
-    initialization_vector_file_stem = initialization_vector_file.split("/")[-1].split(
-        "."
-    )[0]
+    # Get pertubation if any
+    pertubations = config.get(
+        "global_spherical_harmonics", "sh_initialization_purtubation", fallback="0.0"
+    )
+    pertubations = [float(p.strip()) for p in pertubations.split(",")]
 
-    # initialization_pertubation_strength = config.getfloat(
-    #     "experiment", "sh_initialization_purtubation", fallback=0.0
-    # )
+    # enable non-negativity constraint
+    with_non_neg = config.getboolean(
+        "global_spherical_harmonics", "non_negativity_constraint", fallback=True
+    )
 
-    shuffle_train = config.getboolean("dataset", "shuffle_train")
+    # Load in the datasets
+    train_dataset = get_dataset(config)
+    valid_dataset = get_dataset(config, split="val")
+    test_dataset = get_dataset(config, split="test")
 
-    num_epochs = config.getint("training", "epochs", fallback=1)
-    dataset_subset_fraction = config.getint("parameters", "subset_fraction", fallback=1)
+    for str_i, pert in enumerate(pertubations):
+        run_name = config.get("experiment", "run_name_prefix")
+        if len(pertubations) > 1:
+            run_name += f"_purtstr{str_i}"
 
-    # TODO: Move pertubation into config file.
-    for str_i, pert in enumerate(np.logspace(-3, 0, base=2, endpoint=True, num=6)):
         for run_i in range(num_runs):
-            with wandb.init(
-                project=project_name,
-                name=f"{initialization_vector_file_stem}_purtstr{str_i}_run{run_i}",
-            ) as run:
+            with wandb.init(project=project_name, name=f"{run_name}_run{run_i}") as run:
                 wandb.config = {
                     "epochs": num_epochs,
                     "batch_size": 1024,
                     "subset_fraction": dataset_subset_fraction,
-                    "non_negativity_loss": True,
+                    "downsample_ratio": dataset_downsample_ratio,
+                    "non_negativity_loss": with_non_neg,
                     "shuffle_train": shuffle_train,
                     "sh_init": initialization_vector_file,
                     "init_pertubation": pert,

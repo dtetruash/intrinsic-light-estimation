@@ -116,7 +116,7 @@ def gather_image_metadata(config, split="train"):
     ) as tf:
         frame_transforms = json.loads(tf.read())
 
-    downsample_ratio = int(config.get("parameters", "downsample_ratio"))
+    downsample_ratio = int(config.get("dataset", "downsample_ratio"))
 
     return frame_transforms, downsample_ratio
 

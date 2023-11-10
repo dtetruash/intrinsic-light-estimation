@@ -20,10 +20,14 @@ class Config:
             logger.info(ss.read())
 
     @staticmethod
-    def get_config():
+    def get_config(config_path=None):
         if Config.__conf is None:
             Config.__conf = configparser.ConfigParser()
-            Config.__conf.read(Config.__config_path)
+
+            if config_path is None:
+                config_path = Config.__config_path
+
+            Config.__conf.read(config_path)
 
             # Write in interpolated values.
             Config.__conf.set("dataset", "scene_path", "%(dataset_path)s/%(scene)s")

@@ -599,7 +599,7 @@ def create_OLAT_samples_for_frame():
 
     frame_number = int(config.get("images", "image_number"))
 
-    downsample_ratio = int(config.get("parameters", "downsample_ratio"))
+    downsample_ratio = int(config.get("dataset", "downsample_ratio"))
 
     # Loading Images
     (

@@ -40,9 +40,7 @@ install_rich()
 device = (
     "cuda"
     if torch.cuda.is_available()
-    else "mps"
-    if torch.backends.mps.is_available()
-    else "cpu"
+    else "mps" if torch.backends.mps.is_available() else "cpu"
 )
 
 
@@ -215,16 +213,14 @@ def carry_out_training():
             batch_size=config.batch_size, subset_fraction=config.data_subset_fraction
         )
         print(
-            (
-                f"Loaded train dataset with {len(train_dl)} batches "
-                "and {len(train_dl.dataset)} samples."
-            )
+            f"Loaded train dataset with {len(train_dl)} batches "
+            "and {len(train_dl.dataset)} samples."
         )
 
         valid_dl = get_dataloader(batch_size=2 * config.batch_size, split="val")
         print(
-            f"Loaded valid dataset with {len(valid_dl)} batches \
-            and {len(valid_dl.dataset)} samples."
+            f"Loaded valid dataset with {len(valid_dl)} batches             and"
+            f" {len(valid_dl.dataset)} samples."
         )
 
         # make output dirs
@@ -385,7 +381,7 @@ if __name__ == "__main__":
             "data_subset_fraction": {"value": 1},
             "model_checkpoint_path": {"value": "model_checkpoints"},
             "model_trained_path": {"value": "model_trained"},
-            "scene": {"value": raster_config[]["scene"]},
+            "scene": {"value": raster_config["scene"]},
         }
     )
 
