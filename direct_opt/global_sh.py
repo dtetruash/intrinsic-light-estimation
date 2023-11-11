@@ -417,13 +417,14 @@ def experiment_run():
     )
 
     # Initialization pertubation
-    init_perturb_strength = wandb.config["init_pertubation"]
-    if init_perturb_strength > 0:
+    # If it is set to zero, it still couts as enabled
+    if "init_pertubation" in wandb.config:
+        init_perturb_strength = wandb.config["init_pertubation"]
         pertubation = torch.rand_like(sh_coeff) * init_perturb_strength
         sh_coeff += pertubation
 
         sh_coeff_display_table.add_row(
-            "Pertubation", *[f"{float(c):.3f}" for c in pertubation.tolist()]
+            "Pertubation", *[f"{float(c)}" for c in pertubation.tolist()]
         )
 
         sh_coeff_display_table.add_row(
@@ -535,7 +536,7 @@ if __name__ == "__main__":
 
     # Experiment meta-data confids
     project_name = config.get("experiment", "project_name")
-    run_name = config.get("experiment", "run_name_prefix")
+    run_name_prefix = config.get("experiment", "run_name_prefix")
     num_runs = config.getint("experiment", "num_runs", fallback=1)
     record_freq = config.getint("experiment", "record_frequency", fallback=50)
 
@@ -566,7 +567,8 @@ if __name__ == "__main__":
     valid_dataset = get_dataset(config, split="val")
     test_dataset = get_dataset(config, split="test")
 
-    for str_i, pert in enumerate(pertubations):
+    for str_i, ptrb in enumerate(pertubations):
+        run_name = run_name_prefix
         if len(pertubations) > 1:
             run_name += f"_purtstr{str_i}"
 
@@ -579,7 +581,7 @@ if __name__ == "__main__":
             "non_negativity_constraint": non_negativity_constraint,
             "shuffle_train": shuffle_train,
             "sh_init": initialization_vector_file,
-            "init_pertubation": pert,
+            "init_pertubation": ptrb,
             "record_freq": record_freq,
         }
 
