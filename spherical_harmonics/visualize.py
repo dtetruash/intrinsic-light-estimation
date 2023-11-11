@@ -350,7 +350,7 @@ if __name__ == "__main__":
     # Read the c2w from file.
     config = Config.get_config()
     split = "test"
-    file_path = config.get(, "scene_path") + f"/transforms_{split}.json"
+    file_path = config.get("dataset", "scene_path") + f"/transforms_{split}.json"
 
     ic(file_path)
     with open(file_path, "r") as tf:

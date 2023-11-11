@@ -594,7 +594,7 @@ def reconstruct_image(W, H, pixels, occupancy, add_alpha=False):
 def create_OLAT_samples_for_frame():
     """Renders raster images given the config for one image frame"""
     # Load Transforms
-    with open(config.get(, "transforms_file"), "r") as tf:
+    with open(config.get("dataset", "transforms_file"), "r") as tf:
         frame_transforms = json.loads(tf.read())
 
     frame_number = int(config.get("images", "image_number"))
@@ -616,7 +616,7 @@ def create_OLAT_samples_for_frame():
     logger.info(f"Loaded images of size ({W},{H}).")
 
     # Loading Lights and Light Transforms
-    lights_file_path = config.get(, "lights_file")
+    lights_file_path = config.get("dataset", "lights_file")
     with open(lights_file_path, "r") as lf:
         lights_info = json.loads(lf.read())
     logger.info(

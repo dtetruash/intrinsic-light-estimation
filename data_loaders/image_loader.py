@@ -32,7 +32,7 @@ def format_image_path(frame_number, data_path=None, channel="", light=""):
         The string path to the image with given parameters.
     """
     if data_path is None:
-        data_path = config.get(, "data_path")
+        data_path = config.get("dataset", "data_path")
 
     img_name = f"{data_path}/r_{frame_number:03d}"
     img_name += f"_{channel}" if channel else ""

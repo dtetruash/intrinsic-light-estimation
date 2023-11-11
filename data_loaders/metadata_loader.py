@@ -8,7 +8,7 @@ from ile_utils.config import Config
 
 def get_transform(frame_num, split="val"):
     config = Config.get_config()
-    file_path = config.get(, "scene_path") + f"/transforms_{split}.json"
+    file_path = config.get("dataset", "scene_path") + f"/transforms_{split}.json"
     with open(file_path, "r") as tf:
         frame_transforms = json.loads(tf.read())
 
