@@ -555,7 +555,7 @@ if __name__ == "__main__":
     pertubations = config.get(
         "global_spherical_harmonics", "sh_initialization_purtubation", fallback="0.0"
     )
-    pertubations = [float(p.strip()) for p in pertubations.split(",")]
+    pertubations = [p.strip())for p in pertubations.split(",")]
 
     # get the non-negativity constraint switch
     non_negativity_constraint = config.getboolean(
@@ -567,10 +567,10 @@ if __name__ == "__main__":
     valid_dataset = get_dataset(config, split="val")
     test_dataset = get_dataset(config, split="test")
 
-    for str_i, ptrb in enumerate(pertubations):
+    for ptrb_str in pertubations:
         run_name = run_name_prefix
         if len(pertubations) > 1:
-            run_name += f"_purtstr{str_i}"
+            run_name += f"_ptrbstr-{ptrb_str}"
 
         # Set this run's confg
         run_config = {
@@ -581,7 +581,7 @@ if __name__ == "__main__":
             "non_negativity_constraint": non_negativity_constraint,
             "shuffle_train": shuffle_train,
             "sh_init": initialization_vector_file,
-            "init_pertubation": ptrb,
+            "init_pertubation": float(ptrb_str),
             "record_freq": record_freq,
         }
 
