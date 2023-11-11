@@ -1,4 +1,4 @@
-"""Directly optimize the coeficients of a global spherical basis function
+"""Directly optimize the coeficients of a global spherical basis functions
 to be able to reproduce global illumination, foregoing an MLP core.
 """
 
@@ -14,6 +14,25 @@ import torch.autograd.anomaly_mode
 import torch.nn.functional as F
 import wandb
 import wandb.plot
+from rich.traceback import install as install_rich
+from tqdm import tqdm
+
+from ile_utils.config import Config
+from ile_utils.get_device import get_device
+
+# Must read in the config before other imports override it
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c", "--config_path", help="Path to the config file", required=True
+    )
+
+    args = parser.parse_args()
+
+    # Readin the proper config.
+    config = Config.get_config(args.config_path)
+
+
 from data_loaders import olat_render as ro
 from data_loaders.datasets import (
     IntrinsicDiffuseDataset,
@@ -24,15 +43,11 @@ from data_loaders.datasets import (
 from data_loaders.get_dataloader import get_dataloader
 from data_loaders.metadata_loader import get_camera_orientation
 from icecream import ic
-from ile_utils.config import Config
-from ile_utils.get_device import get_device
 from log import get_logger
 from losses.metrics import psnr
-from rich.traceback import install as install_rich
 from spherical_harmonics.sph_harm import render_second_order_SH
 from spherical_harmonics.visualize import visualie_SH_on_3D_sphere, evaluate_SH_on_sphere
 from spherical_harmonics.sampling import sample_uniform_sphere
-from tqdm import tqdm
 
 install_rich()
 
@@ -90,7 +105,7 @@ def train_epoch(
         }
 
         # Log the evolution of the coeffs themselves for later
-        if epoch_step % 50 == 1:
+        if epoch_step % wandb.config["record_freq"] == 0:
             coeff_evolution_data["xs"].append(epoch_progress)
             coeff_evolution_data["ys"].append(sh_coeff.clone().detach().cpu().numpy())
 
@@ -190,7 +205,7 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
     train_loss = F.mse_loss(gt_rgb, pred_rgb)
 
     # Non negativity constraint
-    if wandb.config.get("non_negativity_loss", False) is True:
+    if wandb.config.get("non_negativity_loss", False):
         uniform_on_sphere = sample_uniform_sphere(rng)
         uniform_SH_evaluations = render_second_order_SH(
             sh_coeff, torch.tensor(uniform_on_sphere)
@@ -203,6 +218,9 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
             )
         )
         train_loss += non_negativity_loss
+
+        # Log the non-neg loss to see evolution
+        wandb.log({"train/non-neg-loss": non_negativity_loss})
 
     train_psnr = psnr(train_loss.item())
 
@@ -380,7 +398,7 @@ def experiment_run():
     # TODO: Add initialization options (experiemnt configs)
 
     # SH Coeffs initialization
-    init_file = wandb.config["sh_init"]
+    init_file = wandb.config.get("sh_init", None)
     if init_file is None:
         sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
     else:
@@ -513,10 +531,13 @@ if __name__ == "__main__":
 
     # Readin the proper config.
     config = Config.get_config(args.config_path)
+    Config.log_config(logger)
 
     # Experiment meta-data confids
     project_name = config.get("experiment", "project_name")
+    run_name = config.get("experiment", "run_name_prefix")
     num_runs = config.getint("experiment", "num_runs", fallback=1)
+    record_freq = config.getint("experiment", "record_frequency", fallback=50)
 
     # Dataset configs
     dataset_subset_fraction = config.getint("dataset", "subset_fraction", fallback=1)
@@ -535,8 +556,8 @@ if __name__ == "__main__":
     )
     pertubations = [float(p.strip()) for p in pertubations.split(",")]
 
-    # enable non-negativity constraint
-    with_non_neg = config.getboolean(
+    # get the non-negativity constraint switch
+    non_negativity_constraint = config.getboolean(
         "global_spherical_harmonics", "non_negativity_constraint", fallback=True
     )
 
@@ -546,20 +567,27 @@ if __name__ == "__main__":
     test_dataset = get_dataset(config, split="test")
 
     for str_i, pert in enumerate(pertubations):
-        run_name = config.get("experiment", "run_name_prefix")
         if len(pertubations) > 1:
             run_name += f"_purtstr{str_i}"
 
+        # Set this run's confg
+        run_config = {
+            "epochs": num_epochs,
+            "batch_size": 1024,
+            "subset_fraction": dataset_subset_fraction,
+            "downsample_ratio": dataset_downsample_ratio,
+            "non_negativity_constraint": non_negativity_constraint,
+            "shuffle_train": shuffle_train,
+            "sh_init": initialization_vector_file,
+            "init_pertubation": pert,
+            "record_freq": record_freq,
+        }
+
         for run_i in range(num_runs):
-            with wandb.init(project=project_name, name=f"{run_name}_run{run_i}") as run:
-                wandb.config = {
-                    "epochs": num_epochs,
-                    "batch_size": 1024,
-                    "subset_fraction": dataset_subset_fraction,
-                    "downsample_ratio": dataset_downsample_ratio,
-                    "non_negativity_loss": with_non_neg,
-                    "shuffle_train": shuffle_train,
-                    "sh_init": initialization_vector_file,
-                    "init_pertubation": pert,
-                }
+            run = wandb.init(
+                project=project_name, name=f"{run_name}_run{run_i}", config=run_config
+            )
+            assert run is not None
+
+            with run:
                 experiment_run()
