@@ -418,9 +418,13 @@ def experiment_run():
 
     # Initialization pertubation
     # If it is set to zero, it still couts as enabled
-    if "init_pertubation" in wandb.config:
-        init_perturb_strength = wandb.config["init_pertubation"]
-        pertubation = torch.rand_like(sh_coeff) * init_perturb_strength
+    if "pertubation_init" in wandb.config:
+        perturb_init_file = wandb.config["pertubation_init"]
+        perturb_strength = wandb.config["pertubation_strength"]
+        ic(pertubations_file)
+        ic(perturb_strength)
+
+        pertubation = torch.tensor(np.fromfile(perturb_init_file)) * perturb_strength
         sh_coeff += pertubation
 
         sh_coeff_display_table.add_row(
@@ -552,10 +556,19 @@ if __name__ == "__main__":
         "global_spherical_harmonics", "sh_initialization", fallback=None
     )
     # Get pertubation if any
-    pertubations = config.get(
-        "global_spherical_harmonics", "sh_initialization_purtubation", fallback="0.0"
+    pertubations_file = config.get(
+        "global_spherical_harmonics", "sh_initialization_purtubation", fallback=None
     )
-    pertubations = [p.strip() for p in pertubations.split(",")]
+    pertubations_min = config.getfloat(
+        "global_spherical_harmonics",
+        "sh_initialization_purtubation_strength_min",
+        fallback=0,
+    )
+    pertubations_max = config.getfloat(
+        "global_spherical_harmonics",
+        "sh_initialization_purtubation_strength_max",
+        fallback=1,
+    )
 
     # get the non-negativity constraint switch
     non_negativity_constraint = config.getboolean(
@@ -567,9 +580,9 @@ if __name__ == "__main__":
     valid_dataset = get_dataset(config, split="val")
     test_dataset = get_dataset(config, split="test")
 
-    for ptrb_str in pertubations:
+    for ptrb_str in np.linspace(pertubations_min, pertubations_max, num=8):
         run_name = run_name_prefix
-        if len(pertubations) > 1:
+        if pertubations_file is not None:
             run_name += f"_ptrbstr-{ptrb_str}"
 
         # Set this run's confg
@@ -581,7 +594,8 @@ if __name__ == "__main__":
             "non_negativity_constraint": non_negativity_constraint,
             "shuffle_train": shuffle_train,
             "sh_init": initialization_vector_file,
-            "init_pertubation": float(ptrb_str),
+            "pertubation_init": pertubations_file,
+            "pertubation_strength": ptrb_str,
             "record_freq": record_freq,
         }
 
