@@ -555,7 +555,7 @@ if __name__ == "__main__":
     pertubations = config.get(
         "global_spherical_harmonics", "sh_initialization_purtubation", fallback="0.0"
     )
-    pertubations = [p.strip())for p in pertubations.split(",")]
+    pertubations = [p.strip() for p in pertubations.split(",")]
 
     # get the non-negativity constraint switch
     non_negativity_constraint = config.getboolean(
