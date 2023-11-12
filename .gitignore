@@ -6,6 +6,8 @@
 # ignore wandb
 wandb/
 
+# ignore experiment data
+experiment_data/
 
 
 # Byte-compiled / optimized / DLL files
