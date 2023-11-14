@@ -111,7 +111,7 @@ def train_epoch(
         }
 
         # Log the evolution of the coeffs themselves for later
-        if epoch_step % wandb.config["record_freq"] == 0:
+        if (epoch_step - 1) % wandb.config["record_freq"] == 0:
             coeff_evolution_data["xs"].append(epoch_progress)
             coeff_evolution_data["ys"].append(sh_coeff.clone().detach().cpu().numpy())
 
