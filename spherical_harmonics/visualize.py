@@ -404,14 +404,22 @@ if __name__ == "__main__":
     R_front = ro.to_rotation(ro.get_c2w(39, frame_transforms))
     R_back = ro.to_rotation(ro.get_c2w(89, frame_transforms))
     Rs = [R_front, R_back]
+
+    # Good example coeffs from chair int
+    # sh_coeff = np.array(
+    #     [0.07135, -0.1003, 0.162, -0.09631, -0.04226, 0.02891, 0.1266, -0.04299, -0.1085]
+    # )
+
+    # Bad init perturbed
     sh_coeff = np.array(
-        [0.07135, -0.1003, 0.162, -0.09631, -0.04226, 0.02891, 0.1266, -0.04299, -0.1085]
+        [-0.7476, -0.5516, -0.3432, -0.2094, 0.9305, -1.1122, 0.9675, 1.2823, -1.3073]
     )
+
     fig = visualie_SH_on_3D_sphere(
         sh_coeff,
         camera_orientations=[R_front, R_back],
         bg_color="black",
-        resolution=20,
+        resolution=100,
         show_extremes=True,
     )
 

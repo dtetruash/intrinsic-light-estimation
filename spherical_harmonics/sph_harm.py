@@ -72,26 +72,45 @@ def evaluate_second_order_SH(sh_coefficients, normals, torch_mode=True):
         return np.sum(prod, axis=-1).astype(np.float32)
 
 
-# TODO: move this to SH module
 def render_pixel_from_sh(
-    sh_coeff, normals, albedo, torch_mode=True, return_shading=False
+    sh_coeff, normals, albedo, torch_mode=true, return_shading=false
 ):
-    """Render a pixel color from a second order spherical harmonics basis function
-    normal and albedo at the surface.
+    """render a pixel color from a second order spherical harmonics basis function
+    normal and albedo at the surface. NB: This method clips to [0,1]
 
-    Args:
-        sh_coeff (torch.Tensor or ndarray): second order spherical harmonic coefficients
-        normals (torch.Tensor or ndarray): world normals at each pixel location (N,3)
-        albedo (torch.Tensor or ndarray): albedo at each pixel location (N,3)
+    args:
+        sh_coeff (torch.tensor or ndarray): second order spherical harmonic coefficients
+        normals (torch.tensor or ndarray): world normals at each pixel location (n,3)
+        albedo (torch.tensor or ndarray): albedo at each pixel location (n,3)
         torch_mode (bool): flag switch to use torch instead of numpy
 
-    Returns:
-        Torch.tensor of rendered pixel colors (clipped to [0..1] in each channel).
+    returns:
+        torch.tensor of rendered pixel colors (clipped to [0..1] in each channel).
     """
     lib = torch if torch_mode else np
     shading = evaluate_second_order_SH(sh_coeff, normals, torch_mode)
     clipped_shading = lib.clip(shading, 0.0, 1.0)
     pixel = shade_albedo(albedo, clipped_shading, torch_mode)
+    return (pixel, shading) if return_shading else pixel
+
+
+def render_pixel_from_sh_unclipped(
+    sh_coeff, normals, albedo, torch_mode=True, return_shading=False
+):
+    """render a pixel color from a second order spherical harmonics basis function
+    normal and albedo at the surface. NB: This method does not clip the ouput to [0,1]
+
+    args:
+        sh_coeff (torch.tensor or ndarray): second order spherical harmonic coefficients
+        normals (torch.tensor or ndarray): world normals at each pixel location (n,3)
+        albedo (torch.tensor or ndarray): albedo at each pixel location (n,3)
+        torch_mode (bool): flag switch to use torch instead of numpy
+
+    returns:
+        torch.tensor of rendered but uncplipped pixel colors
+    """
+    shading = evaluate_second_order_SH(sh_coeff, normals, torch_mode)
+    pixel = shade_albedo(albedo, shading, torch_mode)
     return (pixel, shading) if return_shading else pixel
 
 
