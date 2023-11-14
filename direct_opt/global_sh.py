@@ -33,7 +33,6 @@ if __name__ == "__main__":
     config = Config.get_config(args.config_path)
 
 
-from data_loaders import olat_render as ro
 from data_loaders.datasets import (
     IntrinsicDiffuseDataset,
     IntrinsicGlobalDataset,
@@ -45,8 +44,12 @@ from data_loaders.metadata_loader import get_camera_orientation
 from icecream import ic
 from log import get_logger
 from losses.metrics import psnr
-from spherical_harmonics.sph_harm import render_second_order_SH
-from spherical_harmonics.visualize import visualie_SH_on_3D_sphere, evaluate_SH_on_sphere
+from spherical_harmonics.sph_harm import evaluate_second_order_SH, render_pixel_from_sh
+from spherical_harmonics.visualize import (
+    visualie_SH_on_3D_sphere,
+    evaluate_SH_on_sphere,
+    visualize_scene_frame_from_sh,
+)
 from spherical_harmonics.sampling import sample_uniform_sphere
 
 install_rich()
@@ -167,29 +170,6 @@ def nornalize_to_canonical_range(x):
     return (x - xmin) / (xmax - xmin)
 
 
-# TODO: move this to SH module
-def render_pixel_from_sh(
-    sh_coeff, normals, albedo, torch_mode=True, return_shading=False
-):
-    """Render a pixel color from a second order spherical harmonics basis function
-    normal and albedo at the surface.
-
-    Args:
-        sh_coeff (torch.Tensor or ndarray): second order spherical harmonic coefficients
-        normals (torch.Tensor or ndarray): world normals at each pixel location (N,3)
-        albedo (torch.Tensor or ndarray): albedo at each pixel location (N,3)
-        torch_mode (bool): flag switch to use torch instead of numpy
-
-    Returns:
-        Torch.tensor of rendered pixel colors (clipped to [0..1] in each channel).
-    """
-    lib = torch if torch_mode else np
-    shading = render_second_order_SH(sh_coeff, normals, torch_mode)
-    clipped_shading = lib.clip(shading, 0.0, 1.0)
-    pixel = ro.shade_albedo(albedo, clipped_shading, torch_mode)
-    return (pixel, shading) if return_shading else pixel
-
-
 def do_forward_pass(sh_coeff, feats, dataset_type):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
 
@@ -207,7 +187,7 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
     # Non negativity constraint
     if wandb.config.get("non_negativity_loss", False):
         uniform_on_sphere = sample_uniform_sphere(rng)
-        uniform_SH_evaluations = render_second_order_SH(
+        uniform_SH_evaluations = evaluate_second_order_SH(
             sh_coeff, torch.tensor(uniform_on_sphere)
         )
         non_negativity_loss = torch.mean(
@@ -225,44 +205,6 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
     train_psnr = psnr(train_loss.item())
 
     return train_loss, train_psnr
-
-
-def visualize_scene(frame_number, sh_coeff, dataset):
-    # Make top row of infered images
-    # load attributes of this validation image
-    gt_attributes, occupancy_mask = dataset.get_frame_decomposition(frame_number)
-
-    _, albedo, _, world_normals = gt_attributes
-
-    val_render_pixels, val_shading = render_pixel_from_sh(
-        sh_coeff.numpy(),
-        world_normals.numpy(),
-        albedo.numpy(),
-        torch_mode=False,
-        return_shading=True,
-    )
-
-    assert dataset.dim is not None
-    W, H = dataset.dim
-
-    val_render_image = ro.reconstruct_image(
-        W, H, val_render_pixels, occupancy_mask, add_alpha=True
-    )
-
-    val_shading = np.clip(
-        val_shading, 0.0, 1.0
-    )  # Clip the shading for proper visualization.
-    val_shading_image = ro.reconstruct_image(
-        W, H, val_shading, occupancy_mask, add_alpha=True
-    )
-
-    # Stick them together
-    gt_render_image, _, gt_shading_image, _ = dataset.get_frame_images(frame_number)
-
-    shading_col = np.concatenate([val_shading_image, gt_shading_image], axis=0)
-    render_col = np.concatenate([val_render_image, gt_render_image], axis=0)
-
-    return shading_col, render_col
 
 
 # TODO: move to image gen
@@ -307,10 +249,12 @@ def generate_validation_artefacts_from_global_sh(
         # END HISTOGRAM
 
         # RENDER IMAGES OF SCENE
-        front_shading, front_render = visualize_scene(
+        front_shading, front_render = visualize_scene_frame_from_sh(
             front_frame, sh_coeff, test_dataset
         )
-        back_shading, back_render = visualize_scene(back_frame, sh_coeff, test_dataset)
+        back_shading, back_render = visualize_scene_frame_from_sh(
+            back_frame, sh_coeff, test_dataset
+        )
         shading_image_array = np.concatenate([front_shading, back_shading], axis=1)
         render_image_array = np.concatenate([front_render, back_render], axis=1)
 
@@ -393,19 +337,15 @@ def experiment_run():
 
     # Populate the table with data
 
-    # TODO: Move this to Models
-    # initialize SH coefficients
-    # TODO: Add initialization options (experiemnt configs)
-
-    # SH Coeffs initialization
-    init_file = wandb.config.get("sh_init", None)
-    if init_file is None:
-        sh_coeff = torch.zeros(9)  # TODO: Make this be dept on an order setting
-    else:
-        sh_coeff = torch.tensor(np.fromfile(init_file))
+    # SH Coeffs initialization, if none given use zeros
+    init_sh_file = wandb.config["sh_init"]
+    if init_sh_file is not None:
+        sh_coeff = torch.tensor(np.fromfile(init_sh_file))
         assert (
             sh_coeff.shape[0] == 9
         ), f"SH inisialization must be of length 9, was {sh_coeff.shape[0]}"
+    else:
+        sh_coeff = torch.zeros(9)
 
     # Log initializatoin
     column_names = [f"C{i}" for i in range(len(sh_coeff))]
@@ -418,11 +358,10 @@ def experiment_run():
 
     # Initialization pertubation
     # If it is set to zero, it still couts as enabled
-    if "pertubation_init" in wandb.config:
-        perturb_init_file = wandb.config["pertubation_init"]
+    perturb_init_file = wandb.config["pertubation_init"]
+    if perturb_init_file is not None:
         perturb_strength = wandb.config["pertubation_strength"]
         ic(pertubations_file)
-        ic(perturb_strength)
 
         pertubation = torch.tensor(np.fromfile(perturb_init_file)) * perturb_strength
         sh_coeff += pertubation
@@ -439,9 +378,14 @@ def experiment_run():
     logger.info("Initializing Spherical Harmonics coefficients to:")
     logger.info(sh_coeff)
 
-    # TODO: Add LR scheduling
     # Set the coeffs as parameters for optimization
-    optimizer = torch.optim.RMSprop([sh_coeff])
+    if "lr" in wandb.config:
+        learning_rate = wandb.config["lr"]
+    else:
+        learning_rate = 0.01  # Default of RSMProp
+
+    optimizer = torch.optim.RMSprop([sh_coeff], lr=learning_rate)
+    logger.info(f"Using RSMProp optimizer with learning rate {learning_rate}.")
 
     n_batches_per_epoch = math.ceil(len(train_dl.dataset) / wandb.config["batch_size"])
 
@@ -480,12 +424,13 @@ def experiment_run():
     # TODO: Add test metric loop
 
     # Histogram plotting
-    shading_histogram_data = np.stack(shading_histogram_data, axis=1)
-    ic(shading_histogram_data.shape)
+    shading_histogram_data_array = np.stack(shading_histogram_data, axis=1)
+    # ic(shading_histogram_data.shape)
     logger.info("Making shading values histogram...")
+    ic(shading_histogram_data_array.shape)
     fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
     _, bins, _ = ax.hist(
-        shading_histogram_data,
+        shading_histogram_data_array,
         stacked=True,
         histtype="bar",
         ec="black",
@@ -496,6 +441,16 @@ def experiment_run():
     ax.set_title(r"Shading values over $S^2$")
     wandb.log({"val/shading_hist": wandb.Image(fig)})
     logger.info("Done.")
+
+    # log the histogram data
+    # TODO: Test and fix me
+    hist_table = wandb.Table(
+        columns=[f"Epoch {i}" for i in range(wandb.config["epochs"])]
+    )
+    for i in range(shading_histogram_data_array.shape[0]):
+        hist_table.add_data(*shading_histogram_data_array[i, :])
+
+    wandb.log({'val/shading_hist_table': hist_table})
 
     # Ceoff evolution plot:
     wandb.log(
@@ -516,7 +471,7 @@ def experiment_run():
     optimized_coeff_table.add_data(
         *list(sh_coeff.numpy())
     )  # Only add the optimized values
-    wandb.log({"Post-training SH Coefficinets": optimized_coeff_table})
+    wandb.log({"optimized_sh_coeff": optimized_coeff_table})
 
     sh_coeff_display_table.add_row(
         "Optimized", *[f"{float(c):.3f}" for c in sh_coeff.tolist()]
@@ -544,21 +499,45 @@ if __name__ == "__main__":
     num_runs = config.getint("experiment", "num_runs", fallback=1)
     record_freq = config.getint("experiment", "record_frequency", fallback=50)
 
-    # Dataset configs
+    # Set this run's confg
+    run_config = {
+        "batch_size": 1024,
+        "record_freq": record_freq,
+    }
+
+    # Dataset Settings
     dataset_subset_fraction = config.getint("dataset", "subset_fraction", fallback=1)
     dataset_downsample_ratio = config.getint("dataset", "downsample_ratio", fallback=2)
+    run_config.update(
+        {
+            "subset_fraction": dataset_subset_fraction,
+            "downsample_ratio": dataset_downsample_ratio,
+        }
+    )
 
+    # Training Settings
     num_epochs = config.getint("training", "epochs", fallback=1)
-    shuffle_train = config.getboolean("training", "shuffle_train")
+    shuffle_train = config.getboolean("training", "shuffle_train", fallback=False)
+    run_config.update({"epochs": num_epochs, "shuffle_train": shuffle_train})
 
-    # SH configs
+    learning_rate = config.get("training", "learning_rate", fallback=0.01)
+    run_config.update(lr=float(learning_rate))
+
+    # SH Settings
     initialization_vector_file = config.get(
         "global_spherical_harmonics", "sh_initialization", fallback=None
     )
+    run_config.update(sh_init=initialization_vector_file)
+
     # Get pertubation if any
     pertubations_file = config.get(
         "global_spherical_harmonics", "sh_initialization_purtubation", fallback=None
     )
+    run_config.update(
+        pertubation_init=pertubations_file,
+    )
+
+    # these settings used only outside of the experiment function
     pertubations_min = config.getfloat(
         "global_spherical_harmonics",
         "sh_initialization_purtubation_strength_min",
@@ -570,40 +549,37 @@ if __name__ == "__main__":
         fallback=1,
     )
 
+    prtb_strs = (
+        [0]
+        if pertubations_file is None
+        else np.linspace(pertubations_min, pertubations_max, num=8)
+    )
+
     # get the non-negativity constraint switch
     non_negativity_constraint = config.getboolean(
         "global_spherical_harmonics", "non_negativity_constraint", fallback=True
     )
+    run_config.update(non_negativity_constraint=non_negativity_constraint)
 
     # Load in the datasets
     train_dataset = get_dataset(config)
     valid_dataset = get_dataset(config, split="val")
     test_dataset = get_dataset(config, split="test")
 
-    for ptrb_str in np.linspace(pertubations_min, pertubations_max, num=8):
+    for prtb_str in prtb_strs:  # [0] is no ptrb file set
         run_name = run_name_prefix
         if pertubations_file is not None:
-            run_name += f"_ptrbstr-{ptrb_str}"
+            run_name += f"_ptrbstr-{prtb_str}"
 
-        # Set this run's confg
-        run_config = {
-            "epochs": num_epochs,
-            "batch_size": 1024,
-            "subset_fraction": dataset_subset_fraction,
-            "downsample_ratio": dataset_downsample_ratio,
-            "non_negativity_constraint": non_negativity_constraint,
-            "shuffle_train": shuffle_train,
-            "sh_init": initialization_vector_file,
-            "pertubation_init": pertubations_file,
-            "pertubation_strength": ptrb_str,
-            "record_freq": record_freq,
-        }
+        run_config.update(pertubation_strength=prtb_str)
 
         for run_i in range(num_runs):
-            run = wandb.init(
-                project=project_name, name=f"{run_name}_run{run_i}", config=run_config
-            )
+            run = wandb.init(project=project_name, config=run_config)
             assert run is not None
+
+            # Keep the autogenerated name with a prefix
+            wandb_run_name = run.name
+            run.name = "_".join([run_name,wandb_run_name])
 
             with run:
                 experiment_run()

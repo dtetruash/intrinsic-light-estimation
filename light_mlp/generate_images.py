@@ -84,7 +84,7 @@ def generate_validation_image(model, model_class, valid_dataset):
             light_harmonics = outputs
 
             # Raster pixel image
-            val_shading = sh.render_second_order_SH(light_harmonics, world_normals)
+            val_shading = sh.evaluate_second_order_SH(light_harmonics, world_normals)
             val_raster_pixels = ro.shade_albedo(albedo, val_shading)
 
         else:

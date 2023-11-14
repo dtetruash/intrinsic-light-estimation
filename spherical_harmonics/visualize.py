@@ -12,7 +12,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from rich.traceback import install
 from scipy.special import sph_harm
 
-from spherical_harmonics.sph_harm import render_second_order_SH
+from spherical_harmonics.sph_harm import evaluate_second_order_SH, render_pixel_from_sh
 
 install()
 
@@ -36,7 +36,9 @@ def generate_harmonic_latlong_image(sh_coeffs, image_dim=100):
     ic(cart_normals.shape)
 
     # rendred each point in cart_normals
-    shading_rendering = render_second_order_SH(sh_coeffs, cart_normals, torch_mode=False)
+    shading_rendering = evaluate_second_order_SH(
+        sh_coeffs, cart_normals, torch_mode=False
+    )
     ic(shading_rendering.shape)
     return shading_rendering.reshape(image_dim, image_dim, -1)
 
@@ -172,6 +174,45 @@ def plot_SH_sphere_on_axis(
     )
 
 
+def visualize_scene_frame_from_sh(frame_number, sh_coeff, dataset, torch_mode=True):
+    # Make top row of infered images
+
+    # load attributes of this validation image
+    gt_attributes, occupancy_mask = dataset.get_frame_decomposition(frame_number)
+
+    _, albedo, _, world_normals = gt_attributes
+
+    val_render_pixels, val_shading = render_pixel_from_sh(
+        sh_coeff,
+        world_normals,
+        albedo,
+        torch_mode,
+        return_shading=True,
+    )
+
+    assert dataset.dim is not None
+    W, H = dataset.dim
+
+    val_render_image = ro.reconstruct_image(
+        W, H, val_render_pixels, occupancy_mask, add_alpha=True
+    )
+
+    val_shading = np.clip(
+        val_shading, 0.0, 1.0
+    )  # Clip the shading for proper visualization.
+    val_shading_image = ro.reconstruct_image(
+        W, H, val_shading, occupancy_mask, add_alpha=True
+    )
+
+    # Stick them together
+    gt_render_image, _, gt_shading_image, _ = dataset.get_frame_images(frame_number)
+
+    shading_col = np.concatenate([val_shading_image, gt_shading_image], axis=0)
+    render_col = np.concatenate([val_render_image, gt_render_image], axis=0)
+
+    return shading_col, render_col
+
+
 def visualie_SH_on_3D_sphere(
     sh_coeffs,
     camera_orientations=[np.eye(3)],
@@ -219,7 +260,10 @@ def evaluate_SH_on_sphere(sh_coeffs, resolution=100):
     cart_normals = meshgrid_to_matrix(*mesh_grid)
 
     # Calculate the spherical harmonic Y(l,m)
-    return render_second_order_SH(sh_coeffs, cart_normals.T, torch_mode=False), mesh_grid
+    return (
+        evaluate_second_order_SH(sh_coeffs, cart_normals.T, torch_mode=False),
+        mesh_grid,
+    )
 
 
 def visualize_SH_validation_with_scipy():

@@ -10,14 +10,21 @@ class Config:
     __conf = None
 
     __config_path = "config.ini"
+    __loaded_path = None
 
     @staticmethod
-    def log_config(logger):
+    def log_config(logger=None):
+        if logger is None:
+            out_func = print
+        else:
+            out_func = logger.info
+
         with io.StringIO() as ss:
-            logger.info("Configuration loaded from file was:")
             Config.get_config().write(ss)
             ss.seek(0)  # rewind
-            logger.info(ss.read())
+
+            out_func(f"Configuration loaded from file {Config.__loaded_path} was:")
+            out_func(ss.read())
 
     @staticmethod
     def get_config(config_path=None):
@@ -28,6 +35,7 @@ class Config:
                 config_path = Config.__config_path
 
             Config.__conf.read(config_path)
+            Config.__loaded_path = config_path
 
             # Write in interpolated values.
             Config.__conf.set("dataset", "scene_path", "%(dataset_path)s/%(scene)s")
