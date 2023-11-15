@@ -8,6 +8,10 @@ import numpy as np
 import torch
 
 
+def mse(img_pred, img_target):
+    return mean_squared_error(img_pred, img_target)
+
+
 def psnr(mse):
     """Compute the Peak Single Noise Ratio from MSE of some data.
 
