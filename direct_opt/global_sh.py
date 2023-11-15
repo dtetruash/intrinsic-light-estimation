@@ -225,7 +225,9 @@ def test_model(sh_coeff, test_dataset):
         table_metrics_shading = wandb.Table(columns=metric_names)
         table_metrics_render = wandb.Table(columns=metric_names)
 
-        for frame_num in range(test_dataset.num_frames):
+        for frame_num in tqdm(
+            range(test_dataset.num_frames), desc="Testing", total=test_dataset.num_frames
+        ):
 
             # render frames with the given SH
             pred_render_image, pred_shading_image = render_image_from_sh(
@@ -548,7 +550,7 @@ def experiment_run():
         )
 
     # Compute the test error and metrics
-    # TODO: Add test metric loop
+    test_model(sh_coeff, test_dataset)
 
     # Histogram plotting
     shading_histogram_data_array = np.stack(shading_histogram_data, axis=1)
