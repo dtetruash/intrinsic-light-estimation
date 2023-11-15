@@ -8,6 +8,8 @@ from rich.table import Table as RichTable
 from rich.console import Console
 import argparse
 
+from collections import defaultdict
+
 import numpy as np
 import torch
 import torch.autograd.anomaly_mode
@@ -39,11 +41,12 @@ from data_loaders.datasets import (
     OLATDataset,
     unpack_item,
 )
+from data_loaders.olat_render import remove_alpha
 from data_loaders.get_dataloader import get_dataloader
 from data_loaders.metadata_loader import get_camera_orientation
 from icecream import ic
 from log import get_logger
-from losses.metrics import psnr
+from losses import metrics
 from spherical_harmonics.sph_harm import (
     evaluate_second_order_SH,
     render_pixel_from_sh_unclipped,
@@ -52,6 +55,7 @@ from spherical_harmonics.visualize import (
     visualie_SH_on_3D_sphere,
     evaluate_SH_on_sphere,
     visualize_scene_frame_from_sh,
+    render_image_from_sh,
 )
 from spherical_harmonics.sampling import sample_uniform_sphere
 
@@ -159,6 +163,126 @@ def validate_model(sh_coeff, valid_dl):
     wandb.log(val_metrics)
 
 
+def log_metrics_to_table_and_accumulate(
+    pred_image, gt_image, metrics_table, accumulator
+):
+    # MSE
+    mse = metrics.mse(pred_image, gt_image)
+    accumulator["MSE"] += mse
+    # LMSE
+    lmse = metrics.local_mse(pred_image, gt_image)
+    accumulator["LMSE"] += lmse
+    # PSNR
+    psnr = metrics.psnr(mse)
+    accumulator["PSRN"] += psnr
+    # DSSIM
+    dssim = metrics.dssim(pred_image, gt_image)
+    accumulator["DSSIM"] += dssim
+    # SIL2
+    sil2 = metrics.scale_inv_L2(pred_image, gt_image)
+    accumulator["SIL2"] += sil2
+
+    # Log to table
+    metrics_table.add_data(
+        mse,
+        lmse,
+        psnr,
+        dssim,
+        dssim,
+        sil2,
+    )
+
+
+def log_avg_metrics_and_return_table(metrics_accumulator, num_frames, metric_names):
+    avg_metrics = [metrics_accumulator[m] / float(num_frames) for m in metric_names]
+    avg_table = wandb.Table(columns=metric_names)
+    avg_table.add_data(*avg_metrics)
+
+    # log the metrics as numbers
+    wandb.log({f"test/avg_{m}": avg_metrics[i] for i, m in enumerate(avg_metrics)})
+
+    return avg_table
+
+
+def test_model(sh_coeff, test_dataset):
+    """Go through all test frames. Render shading and RGB images from each.
+    Compute series of metrics for each img pair.
+    Log the metris to a wandb.table, log the averages to another table.
+    Also log the averages to an axis for direct comparisons between runs.
+    """
+
+    with torch.inference_mode():
+        # get a numpy copy of the sh_coeffs
+        test_sh_coeff = sh_coeff.clone().detach().cpu().numpy()
+
+        metric_names = ["MSE", "LMSE", "PSNR", "DSSIM", "SIL2"]
+
+        # Accumulaing dicts for later averagings
+        accus_shading = defaultdict(lambda: 0.0)
+        accus_render = defaultdict(lambda: 0.0)
+
+        # Create the wandb tables
+        table_metrics_shading = wandb.Table(columns=metric_names)
+        table_metrics_render = wandb.Table(columns=metric_names)
+
+        for frame_num in range(test_dataset.num_frames):
+
+            # render frames with the given SH
+            pred_render_image, pred_shading_image = render_image_from_sh(
+                frame_num, test_sh_coeff, test_dataset, add_alpha=False, torch_mode=False
+            )
+
+            # Get the GT frame images and renders
+            gt_images = test_dataset.get_frame_images(frame_num)
+            gt_render_image, _, gt_shading_image, _ = gt_images
+
+            # Then get then remove alpha (with method)
+            gt_render_image_rgb = remove_alpha(gt_render_image)
+            gt_shading_image_rgb = remove_alpha(gt_shading_image)
+
+            # Then set unoccupied pixels to white.
+            _, frame_occupancy = test_dataset.get_frame_decomposition(frame_num)
+            gt_render_image_rgb[~frame_occupancy] = 1.0
+            gt_shading_image_rgb[~frame_occupancy] = 1.0
+
+            # Evaluate and accumulate the metrics
+            #
+            # SHADING METRCIS
+            log_metrics_to_table_and_accumulate(
+                pred_shading_image,
+                gt_shading_image_rgb,
+                table_metrics_shading,
+                accus_shading,
+            )
+
+            # RENDER METRCIS
+            log_metrics_to_table_and_accumulate(
+                pred_render_image,
+                gt_render_image_rgb,
+                table_metrics_render,
+                accus_render,
+            )
+
+        # Compute the averages and log them to a table
+        table_avg_metrics_shading = log_avg_metrics_and_return_table(
+            accus_shading, test_dataset.num_frames, metric_names
+        )
+        table_avg_metrics_render = log_avg_metrics_and_return_table(
+            accus_render, test_dataset.num_frames, metric_names
+        )
+
+        # Log the tables to Wandb!
+        #
+        wandb.log(
+            {
+                "test/table_metrics_shading": table_metrics_shading,
+                "test/table_avg_metrics_shading": table_avg_metrics_shading,
+                "test/table_metrics_render": table_metrics_render,
+                "test/table_avg_metrics_render": table_avg_metrics_render,
+            }
+        )
+
+
 def nornalize_to_canonical_range(x):
     """Scale and shift the array to the canonical range [0..1] with full support.
     Output's range will be [0..1], always.
@@ -205,7 +329,7 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
         # Log the non-neg loss to see evolution
         wandb.log({"train/non-neg-loss": non_negativity_loss})
 
-    train_psnr = psnr(train_loss.item())
+    train_psnr = metrics.psnr(train_loss.item())
 
     return train_loss, train_psnr
 
