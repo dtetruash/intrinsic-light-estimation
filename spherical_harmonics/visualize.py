@@ -174,8 +174,12 @@ def plot_SH_sphere_on_axis(
     )
 
 
-def visualize_scene_frame_from_sh(frame_number, sh_coeff, dataset, torch_mode=True):
-    # Make top row of infered images
+def render_image_from_sh(
+    frame_number, sh_coeff, dataset, add_alpha=True, torch_mode=True
+):
+    # this method produces sh-rendered images of the render and shading
+    # of a given frame of a dataset.
+    # The images should be well-formed on the [0,1] domain
 
     # load attributes of this validation image
     gt_attributes, occupancy_mask = dataset.get_frame_decomposition(frame_number)
@@ -193,15 +197,27 @@ def visualize_scene_frame_from_sh(frame_number, sh_coeff, dataset, torch_mode=Tr
     assert dataset.dim is not None
     W, H = dataset.dim
 
-    val_render_image = ro.reconstruct_image(
-        W, H, val_render_pixels, occupancy_mask, add_alpha=True
+    render_image = ro.reconstruct_image(
+        W, H, val_render_pixels, occupancy_mask, add_alpha=add_alpha
     )
 
     val_shading = np.clip(
         val_shading, 0.0, 1.0
     )  # Clip the shading for proper visualization.
-    val_shading_image = ro.reconstruct_image(
-        W, H, val_shading, occupancy_mask, add_alpha=True
+    shading_image = ro.reconstruct_image(
+        W, H, val_shading, occupancy_mask, add_alpha=add_alpha
+    )
+
+    return render_image, shading_image
+
+
+def visualize_scene_frame_from_sh(frame_number, sh_coeff, dataset, torch_mode=True):
+    # This method makes column comparison between sh-render and gt.
+    # It makes columns for both the shading and for the render
+
+    # Make top row of infered images
+    val_render_image, val_shading_image = render_image_from_sh(
+        frame_number, sh_coeff, dataset, add_alpha=True, torch_mode=torch_mode
     )
 
     # Stick them together
