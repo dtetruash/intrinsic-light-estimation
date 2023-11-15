@@ -73,7 +73,7 @@ def evaluate_second_order_SH(sh_coefficients, normals, torch_mode=True):
 
 
 def render_pixel_from_sh(
-    sh_coeff, normals, albedo, torch_mode=true, return_shading=false
+    sh_coeff, normals, albedo, torch_mode=True, return_shading=False
 ):
     """render a pixel color from a second order spherical harmonics basis function
     normal and albedo at the surface. NB: This method clips to [0,1]
