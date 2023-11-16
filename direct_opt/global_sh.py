@@ -94,7 +94,7 @@ def train_epoch(
 
         with torch.autograd.anomaly_mode.detect_anomaly():
             # forward pass
-            batch_train_loss, batch_psnr = do_forward_pass(
+            batch_train_loss, batch_psnr, batch_non_neg = do_forward_pass(
                 sh_coeff, feats, type(train_dataset)
             )
             cumu_loss += batch_train_loss.item()
@@ -113,6 +113,10 @@ def train_epoch(
             "train/train_psnr": batch_psnr,
             "train/epoch": epoch_progress,
         }
+
+        if batch_non_neg is not None:
+            # Log the non-neg loss to see evolution
+            metrics.update({"train/non_neg_loss": batch_non_neg})
 
         # Log the evolution of the coeffs themselves for later
         if (epoch_step - 1) % wandb.config["record_freq"] == 0:
@@ -148,7 +152,7 @@ def validate_model(sh_coeff, valid_dl):
             samples_in_batch = feats.size(0)
 
             # Forward pass
-            val_loss, val_psnr = do_forward_pass(sh_coeff, feats, type(valid_dataset))
+            val_loss, val_psnr, _ = do_forward_pass(sh_coeff, feats, type(valid_dataset))
 
             val_loss_acc += val_loss.item() * samples_in_batch
             val_psnr_acc += val_psnr * samples_in_batch
@@ -302,35 +306,46 @@ def nornalize_to_canonical_range(x):
 def do_forward_pass(sh_coeff, feats, dataset_type):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
 
-    gt_rgb, albedo, _, normals = dataset_type.unpack_item_batch(feats)
+    gt_rgb, albedo, gt_shading, normals = dataset_type.unpack_item_batch(feats)
 
     # render pixel with SH:
     # NOTE: We should broadcast the coeffs to num of normals here,
     # or hope it will be done automatically.
-    pred_rgb = render_pixel_from_sh_unclipped(sh_coeff, normals, albedo)
-    assert isinstance(pred_rgb, torch.Tensor)
+    loss_type = wandb.config["loss_variable"]
+    if loss_type == "rgb":
+        pred_rgb = render_pixel_from_sh_unclipped(sh_coeff, normals, albedo)
+        assert isinstance(pred_rgb, torch.Tensor)
 
-    # Compute reconstruction loss:
-    train_loss = F.mse_loss(gt_rgb, pred_rgb)
+        # Compute reconstruction loss:
+        train_loss = F.mse_loss(gt_rgb, pred_rgb)
+
+    elif loss_type == "shading":
+        pred_shading = evaluate_second_order_SH(sh_coeff, normals)
+        assert isinstance(pred_shading, torch.Tensor)
+
+        # Compute reconstruction loss:
+        train_loss = F.mse_loss(gt_shading, pred_shading)
+    else:
+        raise ValueError(
+            f'Unknwon loss_type {loss_type}. Supported are "rgb" and "shading"'
+        )
+
+    train_psnr = metrics.psnr(train_loss.item())
 
     # Non negativity constraint
-    if wandb.config.get("non_negativity_constraint", False):
-        uniform_on_sphere = sample_uniform_sphere(rng)
+    non_neg_lambda = wandb.config["non_negativity_constraint_strength"]
+    non_negativity_loss = None
+    if non_neg_lambda > 0:
+        uniform_on_sphere = sample_uniform_sphere(rng, K=5000)
         uniform_SH_evaluations = evaluate_second_order_SH(
             sh_coeff, torch.tensor(uniform_on_sphere)
         )
         non_negativity_loss = torch.mean(
             torch.square(torch.minimum(torch.tensor([0]), uniform_SH_evaluations))
         )
-        lambd = wandb.config["non_negativity_constraint_strength"]
-        train_loss += lambd * non_negativity_loss
+        train_loss += non_neg_lambda * non_negativity_loss
 
-        # Log the non-neg loss to see evolution
-        wandb.log({"train/non-neg-loss": non_negativity_loss})
-
-    train_psnr = metrics.psnr(train_loss.item())
-
-    return train_loss, train_psnr
+    return train_loss, train_psnr, non_negativity_loss
 
 
 # TODO: move to image gen
@@ -547,7 +562,8 @@ def experiment_run():
         )
 
     # Compute the test error and metrics
-    test_model(sh_coeff, test_dataset)
+    # FIXME: Desabled for now co im debuing non-neg
+    # test_model(sh_coeff, test_dataset)
 
     # Histogram plotting
     shading_histogram_data_array = np.stack(shading_histogram_data, axis=1)
@@ -649,6 +665,9 @@ if __name__ == "__main__":
     learning_rate = config.get("training", "learning_rate", fallback=0.01)
     run_config.update(lr=float(learning_rate))
 
+    loss_var = config.get("training", "loss_variable", fallback="rgb")
+    run_config.update(loss_variable=loss_var)
+
     # SH Settings
     initialization_vector_file = config.get(
         "global_spherical_harmonics", "sh_initialization", fallback=None
@@ -682,9 +701,6 @@ if __name__ == "__main__":
     )
 
     # get the non-negativity constraint switch
-    non_negativity_constraint = config.getboolean(
-        "global_spherical_harmonics", "non_negativity_constraint", fallback=True
-    )
     if config.has_option(
         "global_spherical_harmonics", "non_negativity_constraint_strength"
     ):
@@ -692,16 +708,28 @@ if __name__ == "__main__":
         non_neg_str_list = config.get(
             "global_spherical_harmonics", "non_negativity_constraint_strength"
         )
-        non_neg_strengths = [float(s.strip()) for s in non_neg_str_list]
-    else:
-        non_neg_strengths = [1]
 
-    run_config.update(non_negativity_constraint=non_negativity_constraint)
+        if non_neg_str_list == "":
+            raise ValueError(
+                "Config global_spherical_harmonics.non_negativity_constraint_strength=''"
+                " is invalid."
+            )
+
+        non_neg_strengths = [float(s.strip()) for s in non_neg_str_list.split(",")]
+    else:
+        raise ValueError(
+            "Config must set the strength of the non-negativity constraint."
+            "To disable it set the"
+            " 'global_spherical_harmonics.non_negativity_constraint_strength' to 0."
+        )
 
     # Load in the datasets
     train_dataset = get_dataset(config)
     valid_dataset = get_dataset(config, split="val")
     test_dataset = get_dataset(config, split="test")
+
+    ic(non_neg_strengths)
+    ic(prtb_strs)
 
     for non_neg_str in non_neg_strengths:  # [1] if not set
         for prtb_str in prtb_strs:  # [0] is no ptrb file set
@@ -715,6 +743,7 @@ if __name__ == "__main__":
             run_config.update(non_negativity_constraint_strength=non_neg_str)
 
             for run_i in range(num_runs):
+                run_name += f"_run{run_i+1}"
                 run = wandb.init(project=project_name, config=run_config)
                 assert run is not None
 
