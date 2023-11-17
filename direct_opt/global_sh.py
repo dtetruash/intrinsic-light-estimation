@@ -3,10 +3,13 @@ to be able to reproduce global illumination, foregoing an MLP core.
 """
 
 import math
+import os
 from matplotlib import pyplot as plt
 from rich.table import Table as RichTable
 from rich.console import Console
 import argparse
+
+import PIL.Image
 
 from collections import defaultdict
 
@@ -168,47 +171,66 @@ def validate_model(sh_coeff, valid_dl):
 
 
 def log_metrics_to_table_and_accumulate(
-    pred_image, gt_image, metrics_table, accumulator
+    pred_image, gt_image, metrics_table, accumulator, occupancy
 ):
+    # Get only the occupied pixels to avoice
+    # similarity of the GB from bumping the metrics
+    pred_occupied = pred_image[occupancy]
+    gt_occupied = gt_image[occupancy]
+
     # MSE
-    mse = metrics.mse(pred_image, gt_image)
+    mse = metrics.mse(pred_occupied, gt_occupied)
     accumulator["MSE"] += mse
-    # LMSE
-    lmse = metrics.local_mse(pred_image, gt_image)
-    accumulator["LMSE"] += lmse
     # PSNR
-    psnr = metrics.psnr(mse)
-    accumulator["PSRN"] += psnr
+    psnr = metrics.psnr_sk(pred_occupied, gt_occupied)
+    accumulator["PSNR"] += psnr
+    # SIL2
+    sil2 = metrics.scale_inv_L2(pred_occupied, gt_occupied, torch_mode=False)
+    accumulator["SIL2"] += sil2
     # DSSIM
     dssim = metrics.dssim(pred_image, gt_image)
     accumulator["DSSIM"] += dssim
-    # SIL2
-    sil2 = metrics.scale_inv_L2(pred_image, gt_image)
-    accumulator["SIL2"] += sil2
+    # LMSE
+    lmse = metrics.local_mse(pred_image, gt_image)
+    accumulator["LMSE"] += lmse
+    # LMSE_SIL2
+    lmse_sil2 = metrics.local_mse(pred_image, gt_image, use_sil2=True)
+    accumulator["LMSE_SLI2"] += lmse_sil2
 
     # Log to table
     metrics_table.add_data(
         mse,
         lmse,
+        lmse_sil2,
         psnr,
-        dssim,
         dssim,
         sil2,
     )
 
 
-def log_avg_metrics_and_return_table(metrics_accumulator, num_frames, metric_names):
+def log_avg_metrics_and_return_table(
+    metrics_accumulator, num_frames, metric_names, mode="render"
+):
+    valid_modes = ["render", "shading"]
+    if mode not in valid_modes:
+        raise ValueError(f"Invalid metrics mode {mode}. Valid modes are {valid_modes}.")
+
     avg_metrics = [metrics_accumulator[m] / float(num_frames) for m in metric_names]
     avg_table = wandb.Table(columns=metric_names)
     avg_table.add_data(*avg_metrics)
 
     # log the metrics as numbers
-    wandb.log({f"test/avg_{m}": avg_metrics[i] for i, m in enumerate(avg_metrics)})
+    wandb.log(
+        {
+            f"test_avg_{mode}/avg_{m_name}_{mode}": value
+            for m_name, value in zip(metric_names, avg_metrics)
+        }
+    )
 
     return avg_table
 
 
-def test_model(sh_coeff, test_dataset):
+def test_model(sh_coeff, test_dataset, wandb_run):
     """Go through all test frames. Render shading and RGB images from each.
     Compute series of metrics for each img pair.
     Log the metris to a wandb.table, log the averages to another table.
@@ -219,7 +241,7 @@ def test_model(sh_coeff, test_dataset):
         # get a numpy copy of the sh_coeffs
         test_sh_coeff = sh_coeff.clone().detach().cpu().numpy()
 
-        metric_names = ["MSE", "LMSE", "PSNR", "DSSIM", "SIL2"]
+        metric_names = ["MSE", "LMSE", "LMSE_SLI2", "PSNR", "DSSIM", "SIL2"]
 
         # Accumulaing dicts for later averagings
         accus_shading = defaultdict(lambda: 0.0)
@@ -229,6 +251,18 @@ def test_model(sh_coeff, test_dataset):
         table_metrics_shading = wandb.Table(columns=metric_names)
         table_metrics_render = wandb.Table(columns=metric_names)
 
+        run_proj = wandb_run.project
+        run_name = wandb_run.name
+        output_directory = os.path.join("..", "EXP_OUTPUTS", run_proj, run_name)
+
+        # Create the directory if we need it
+        if wandb.config["save_test_renders"]:
+            # Create the directory if it doesn't exist
+            os.makedirs(output_directory, exist_ok=True)
+            logger.info(
+                f"Created output directory for test set images: {output_directory}"
+            )
+
         for frame_num in tqdm(
             range(test_dataset.num_frames), desc="Testing", total=test_dataset.num_frames
         ):
@@ -237,6 +271,9 @@ def test_model(sh_coeff, test_dataset):
             pred_render_image, pred_shading_image = render_image_from_sh(
                 frame_num, test_sh_coeff, test_dataset, add_alpha=False, torch_mode=False
             )
+
+            pred_render_image = pred_render_image.astype(np.float32)
+            pred_shading_image = pred_shading_image.astype(np.float32)
 
             # Get the GT frame images and renders
             gt_images = test_dataset.get_frame_images(frame_num)
@@ -251,6 +288,36 @@ def test_model(sh_coeff, test_dataset):
             gt_render_image_rgb[~frame_occupancy] = 1.0
             gt_shading_image_rgb[~frame_occupancy] = 1.0
 
+            # save to dir is we want to
+            if wandb.config["save_test_renders"]:
+                pred_render_image_out = os.path.join(
+                    output_directory, f"pred_render_{frame_num:03d}.png"
+                )
+                PIL.Image.fromarray((255 * pred_render_image).astype(np.uint8)).save(
+                    pred_render_image_out
+                )
+
+                pred_shading_image_out = os.path.join(
+                    output_directory, f"pred_shading_{frame_num:03d}.png"
+                )
+                PIL.Image.fromarray((255 * pred_shading_image).astype(np.uint8)).save(
+                    pred_shading_image_out
+                )
+
+                gt_render_image_rgb_out = os.path.join(
+                    output_directory, f"gt_render_{frame_num:03d}.png"
+                )
+                PIL.Image.fromarray((255 * gt_render_image_rgb).astype(np.uint8)).save(
+                    gt_render_image_rgb_out
+                )
+
+                gt_shading_image_rgb_out = os.path.join(
+                    output_directory, f"gt_shading_{frame_num:03d}.png"
+                )
+                PIL.Image.fromarray((255 * gt_shading_image_rgb).astype(np.uint8)).save(
+                    gt_shading_image_rgb_out
+                )
+
             # Evaluate and accumulate the metrics
             #
             # SHADING METRCIS
@@ -259,6 +326,7 @@ def test_model(sh_coeff, test_dataset):
                 gt_shading_image_rgb,
                 table_metrics_shading,
                 accus_shading,
+                frame_occupancy,
             )
 
             # RENDER METRCIS
@@ -267,24 +335,24 @@ def test_model(sh_coeff, test_dataset):
                 gt_render_image_rgb,
                 table_metrics_render,
                 accus_render,
+                frame_occupancy,
             )
 
         # Compute the averages and log them to a table
         table_avg_metrics_shading = log_avg_metrics_and_return_table(
-            accus_shading, test_dataset.num_frames, metric_names
+            accus_shading, test_dataset.num_frames, metric_names, mode="shading"
         )
         table_avg_metrics_render = log_avg_metrics_and_return_table(
             accus_render, test_dataset.num_frames, metric_names
         )
 
         # Log the tables to Wandb!
-        #
         wandb.log(
             {
-                "test/table_metrics_shading": table_metrics_shading,
-                "test/table_avg_metrics_shading": table_avg_metrics_shading,
-                "test/table_metrics_render": table_metrics_render,
-                "test/table_avg_metrics_render": table_avg_metrics_render,
+                "test_tables/table_metrics_shading": table_metrics_shading,
+                "test_tables/table_avg_metrics_shading": table_avg_metrics_shading,
+                "test_tables/table_metrics_render": table_metrics_render,
+                "test_tables/table_avg_metrics_render": table_avg_metrics_render,
             }
         )
 
@@ -306,6 +374,7 @@ def nornalize_to_canonical_range(x):
 def do_forward_pass(sh_coeff, feats, dataset_type):
     # Deconstruct feats into components, albedo, normal, shading, raster_img
 
+    samples_in_batch = feats.size(0)
     gt_rgb, albedo, gt_shading, normals = dataset_type.unpack_item_batch(feats)
 
     # render pixel with SH:
@@ -317,20 +386,28 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
         assert isinstance(pred_rgb, torch.Tensor)
 
         # Compute reconstruction loss:
-        train_loss = F.mse_loss(gt_rgb, pred_rgb)
+        train_loss = F.mse_loss(pred_rgb, gt_rgb, reduction="sum") / samples_in_batch
+        train_psnr = metrics.psnr_sk(
+            pred_rgb.detach().cpu().numpy(), gt_rgb.detach().cpu().numpy()
+        )
 
     elif loss_type == "shading":
         pred_shading = evaluate_second_order_SH(sh_coeff, normals)
         assert isinstance(pred_shading, torch.Tensor)
 
         # Compute reconstruction loss:
-        train_loss = F.mse_loss(gt_shading, pred_shading)
+        train_loss = (
+            F.mse_loss(pred_shading, gt_shading, reduction="sum") / samples_in_batch
+        )
+        train_psnr = metrics.psnr_sk(
+            pred_shading.detach().cpu().numpy(), gt_shading.detach().cpu().numpy()
+        )
     else:
         raise ValueError(
             f'Unknwon loss_type {loss_type}. Supported are "rgb" and "shading"'
         )
 
-    train_psnr = metrics.psnr(train_loss.item())
+    # train_psnr = metrics.psnr(train_loss.item())
 
     # Non negativity constraint
     non_neg_lambda = wandb.config["non_negativity_constraint_strength"]
@@ -435,7 +512,7 @@ def get_dataset(config, downsample_ratio=1, split="train"):
     )
 
 
-def experiment_run():
+def experiment_run(wandb_run=None):
     subset_fraction = wandb.config["subset_fraction"]
     logger.info(f"Training using {1.0/subset_fraction*100:.2f}% of the data.")
 
@@ -562,8 +639,7 @@ def experiment_run():
         )
 
     # Compute the test error and metrics
-    # FIXME: Desabled for now co im debuing non-neg
-    # test_model(sh_coeff, test_dataset)
+    test_model(sh_coeff, test_dataset, wandb_run)
 
     # Histogram plotting
     shading_histogram_data_array = np.stack(shading_histogram_data, axis=1)
@@ -723,6 +799,12 @@ if __name__ == "__main__":
             " 'global_spherical_harmonics.non_negativity_constraint_strength' to 0."
         )
 
+    # Do we want to save the renders make during test_model()?
+    save_test_renders = config.getboolean(
+        "experiment", "save_test_renders", fallback=False
+    )
+    run_config.update(save_test_renders=save_test_renders)
+
     # Load in the datasets
     train_dataset = get_dataset(config)
     valid_dataset = get_dataset(config, split="val")
@@ -752,4 +834,4 @@ if __name__ == "__main__":
                 run.name = "_".join([run_name, wandb_run_name])
 
                 with run:
-                    experiment_run()
+                    experiment_run(run)
