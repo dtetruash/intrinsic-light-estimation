@@ -386,7 +386,7 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
         assert isinstance(pred_rgb, torch.Tensor)
 
         # Compute reconstruction loss:
-        train_loss = F.mse_loss(pred_rgb, gt_rgb, reduction="sum") / samples_in_batch
+        train_loss = F.mse_loss(pred_rgb, gt_rgb)
         train_psnr = metrics.psnr_sk(
             pred_rgb.detach().cpu().numpy(), gt_rgb.detach().cpu().numpy()
         )
@@ -395,12 +395,16 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
         pred_shading = evaluate_second_order_SH(sh_coeff, normals)
         assert isinstance(pred_shading, torch.Tensor)
 
+        # get a single channel from the GT shading image. they are assumed to be the same
+        gt_shading_one_channel = gt_shading[..., 0]
+
         # Compute reconstruction loss:
-        train_loss = (
-            F.mse_loss(pred_shading, gt_shading, reduction="sum") / samples_in_batch
-        )
+        train_loss = F.mse_loss(pred_shading, gt_shading_one_channel)
+
+        # PSNR ON just shading?
         train_psnr = metrics.psnr_sk(
-            pred_shading.detach().cpu().numpy(), gt_shading.detach().cpu().numpy()
+            pred_shading.detach().cpu().numpy(),
+            gt_shading_one_channel.detach().cpu().numpy(),
         )
     else:
         raise ValueError(
