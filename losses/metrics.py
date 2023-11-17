@@ -12,7 +12,6 @@ import numpy as np
 import torch
 
 
-
 def mse(img_pred, img_target):
     """Uses the SK-image MSE function: MSE per-element, and not per-pixel"""
     return mean_squared_error(img_pred, img_target)
@@ -53,7 +52,6 @@ def ssim(img_pred, img_target, **kwargs):
 
 
 def scale_inv_L2(pred, target, lamb=0.5, torch_mode=True):
-    # FIXME: ALWAYS -Ve
     """Scale-invariant L2 loss (MSE). Assumes 2D input (W,H, ...)
     Is only defined on values above zero. Will clip element-wise between 1e-5 and 1.0
     """
