@@ -562,7 +562,15 @@ def experiment_run(wandb_run=None):
     # SH Coeffs initialization, if none given use zeros
     init_sh_file = wandb.config["sh_init"]
     if init_sh_file is not None:
-        sh_coeff = torch.tensor(np.fromfile(init_sh_file))
+        if init_sh_file == "zeros":
+            sh_coeff = torch.zeros(9)
+        elif init_sh_file == "rand":
+            sh_coeff = torch.empty(9)
+            torch.nn.init.uniform_(sh_coeff)
+            sh_coeff *= 2.0
+            sh_coeff -= 1.0
+        else:
+            sh_coeff = torch.tensor(np.fromfile(init_sh_file))
         assert (
             sh_coeff.shape[0] == 9
         ), f"SH inisialization must be of length 9, was {sh_coeff.shape[0]}"
@@ -642,9 +650,7 @@ def experiment_run(wandb_run=None):
             epoch, sh_coeff, test_dataset, shading_histogram_data
         )
 
-    # Compute the test error and metrics
-    test_model(sh_coeff, test_dataset, wandb_run)
-
+    logger.info("Loggin post-traing artefacts")
     # Histogram plotting
     shading_histogram_data_array = np.stack(shading_histogram_data, axis=1)
     # ic(shading_histogram_data.shape)
@@ -675,17 +681,23 @@ def experiment_run(wandb_run=None):
     wandb.log({"val/shading_hist_table": hist_table})
 
     # Ceoff evolution plot:
+    coeff_evolution_lines = np.stack(coeff_evolution_data["ys"]).T
+    ic(column_names, coeff_evolution_lines.shape)
     wandb.log(
         {
             "train/coeff_evolution": wandb.plot.line_series(
                 coeff_evolution_data["xs"],
-                np.stack(coeff_evolution_data["ys"]).T,
+                coeff_evolution_lines,
                 keys=column_names,
                 title="Coefficient Evolution",
                 xname="Epoch",
             )
         }
     )
+
+    # Compute the test error and metrics
+    logger.info("Running Testing loop...")
+    test_model(sh_coeff, test_dataset, wandb_run)
 
     # Save the coefficients produced
     # FIXME: Should index theses with the Y_lm notation
