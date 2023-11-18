@@ -25,6 +25,10 @@ from tqdm import tqdm
 from ile_utils.config import Config
 from ile_utils.get_device import get_device
 
+# Increase table rows
+wandb.Table.MAX_ARTIFACT_ROWS = 250000
+wandb.Table.MAX_ROWS = 250000
+
 # Must read in the config before other imports override it
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -411,20 +415,16 @@ def do_forward_pass(sh_coeff, feats, dataset_type):
             f'Unknwon loss_type {loss_type}. Supported are "rgb" and "shading"'
         )
 
-    # train_psnr = metrics.psnr(train_loss.item())
-
-    # Non negativity constraint
+    # Non negativity constraint, and always log it (even if str is zero)
     non_neg_lambda = wandb.config["non_negativity_constraint_strength"]
-    non_negativity_loss = None
-    if non_neg_lambda > 0:
-        uniform_on_sphere = sample_uniform_sphere(rng, K=5000)
-        uniform_SH_evaluations = evaluate_second_order_SH(
-            sh_coeff, torch.tensor(uniform_on_sphere)
-        )
-        non_negativity_loss = torch.mean(
-            torch.square(torch.minimum(torch.tensor([0]), uniform_SH_evaluations))
-        )
-        train_loss += non_neg_lambda * non_negativity_loss
+    uniform_on_sphere = sample_uniform_sphere(rng, K=5000)
+    uniform_SH_evaluations = evaluate_second_order_SH(
+        sh_coeff, torch.tensor(uniform_on_sphere)
+    )
+    non_negativity_loss = torch.mean(
+        torch.square(torch.minimum(torch.tensor([0]), uniform_SH_evaluations))
+    )
+    train_loss += non_neg_lambda * non_negativity_loss
 
     return train_loss, train_psnr, non_negativity_loss
 
@@ -833,17 +833,15 @@ if __name__ == "__main__":
     ic(prtb_strs)
 
     for non_neg_str in non_neg_strengths:  # [1] if not set
+        run_config.update(non_negativity_constraint_strength=non_neg_str)
         for prtb_str in prtb_strs:  # [0] is no ptrb file set
-            run_name = run_name_prefix
-            if pertubations_file is not None:
-                run_name += f"_ptrbstr-{prtb_str}"
-
             run_config.update(pertubation_strength=prtb_str)
 
-            run_name += f"_non-neg-srt{non_neg_str}"
-            run_config.update(non_negativity_constraint_strength=non_neg_str)
-
             for run_i in range(num_runs):
+                run_name = run_name_prefix
+                if pertubations_file is not None:
+                    run_name += f"_ptrbstr-{prtb_str}"
+                run_name += f"_non-neg-srt{non_neg_str}"
                 run_name += f"_run{run_i+1}"
                 run = wandb.init(project=project_name, config=run_config)
                 assert run is not None
