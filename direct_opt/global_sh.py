@@ -257,7 +257,9 @@ def test_model(sh_coeff, test_dataset, wandb_run):
 
         run_proj = wandb_run.project
         run_name = wandb_run.name
-        output_directory = os.path.join("..", "EXP_OUTPUTS", run_proj, run_name)
+        output_directory = os.path.join(
+            "..", "EXP_OUTPUTS", run_proj, run_name, "images"
+        )
 
         # Create the directory if we need it
         if wandb.config["save_test_renders"]:
