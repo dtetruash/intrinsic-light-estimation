@@ -668,6 +668,9 @@ def experiment_run(wandb_run=None):
     ax.legend(prop={"size": 10})
     ax.set_title(r"Shading values over $S^2$")
     wandb.log({"val/shading_hist": wandb.Image(fig)})
+
+    # Clearing figure to reuse it
+    plt.close(fig)
     logger.info("Done.")
 
     # log the histogram data
