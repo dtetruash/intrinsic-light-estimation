@@ -236,6 +236,7 @@ def visualie_SH_on_3D_sphere(
     resolution=100,
     bg_color="white",
     show_extremes=False,
+    plot_mode="row",
 ):
     """Visualize a unit sphere shaded by SH lighting.
 
@@ -257,7 +258,15 @@ def visualie_SH_on_3D_sphere(
     axes_kwargs = {"projection": "3d", "computed_zorder": False}
     num_plots = len(camera_orientations)
     for i in range(num_plots):
-        ax = fig.add_subplot(1, num_plots, i + 1, **axes_kwargs)
+        if plot_mode == "row":
+            ax = fig.add_subplot(1, num_plots, i + 1, **axes_kwargs)
+        elif plot_mode == "col":
+            ax = fig.add_subplot(num_plots, 1, i + 1, **axes_kwargs)
+        elif plot_mode == "sep":
+            pass
+        else:
+            raise ValueError(f"Unknown plot_mode {plot_mode}")
+
         plot_SH_sphere_on_axis(
             ax,
             surface_points,
@@ -430,6 +439,9 @@ if __name__ == "__main__":
     sh_coeff = np.array(
         [-0.7476, -0.5516, -0.3432, -0.2094, 0.9305, -1.1122, 0.9675, 1.2823, -1.3073]
     )
+
+    # Get SH from csv file
+    sh_coeff_file = None
 
     fig = visualie_SH_on_3D_sphere(
         sh_coeff,
