@@ -1,5 +1,10 @@
+import glob
 import copy
 import json
+import argparse
+import os
+import pandas as pd
+from tqdm import tqdm
 
 import matplotlib.style as mplstyle
 import numpy as np
@@ -254,7 +259,7 @@ def visualie_SH_on_3D_sphere(
 
     ic(surface_values.shape, surface_values.min(), surface_values.max())
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(4.31, 4.31))
     axes_kwargs = {"projection": "3d", "computed_zorder": False}
     num_plots = len(camera_orientations)
     for i in range(num_plots):
@@ -262,8 +267,6 @@ def visualie_SH_on_3D_sphere(
             ax = fig.add_subplot(1, num_plots, i + 1, **axes_kwargs)
         elif plot_mode == "col":
             ax = fig.add_subplot(num_plots, 1, i + 1, **axes_kwargs)
-        elif plot_mode == "sep":
-            pass
         else:
             raise ValueError(f"Unknown plot_mode {plot_mode}")
 
@@ -425,31 +428,125 @@ if __name__ == "__main__":
     with open(file_path, "r") as tf:
         frame_transforms = json.loads(tf.read())
 
-    # I am supplying the C2W matrix here. Rotates objects from the camera to world.
-    R_front = ro.to_rotation(ro.get_c2w(39, frame_transforms))
-    R_back = ro.to_rotation(ro.get_c2w(89, frame_transforms))
-    Rs = [R_front, R_back]
+    parser = argparse.ArgumentParser(description="Your script description here")
 
-    # Good example coeffs from chair int
-    # sh_coeff = np.array(
-    #     [0.07135, -0.1003, 0.162, -0.09631, -0.04226, 0.02891, 0.1266, -0.04299, -0.1085]
-    # )
-
-    # Bad init perturbed
-    sh_coeff = np.array(
-        [-0.7476, -0.5516, -0.3432, -0.2094, 0.9305, -1.1122, 0.9675, 1.2823, -1.3073]
+    # Mode argument
+    parser.add_argument(
+        "-m",
+        "--mode",
+        type=str,
+        default="row",
+        choices=["row", "col", "sep"],
+        help="Specify the mode (default: row)",
     )
+
+    # Views argument
+    parser.add_argument(
+        "-v",
+        "--views",
+        nargs="+",
+        type=int,
+        default=[39, 89],
+        required=True,
+        help="List of integers representing views (at least one element is required)",
+    )
+
+    # Sh-files argument
+    parser.add_argument(
+        "-f",
+        "--sh-files",
+        nargs="+",
+        type=str,
+        required=True,
+        help="List of file paths to CSV files",
+    )
+
+    # show overflow
+    parser.add_argument(
+        "--show-overflow", action="store_true", help="Render overflow on plots"
+    )
+
+    # show overflow
+    parser.add_argument(
+        "-r", "--res", type=int, default=200, help="Resolution of the sphere surface"
+    )
+
+    # Output path argument
+    parser.add_argument(
+        "-o", "--output", type=str, default=None, help="Output path for the results"
+    )
+
+    args = parser.parse_args()
+
+    # Set default value for --output based on -f
+    if args.output is None:
+        args.output = [
+            os.path.join(os.path.dirname(file_path), "sh_vis")
+            for file_path in args.sh_files
+        ]
+
+    # I am supplying the C2W matrix here. Rotates objects from the camera to world.
+    views_Rs = [ro.to_rotation(ro.get_c2w(v, frame_transforms)) for v in args.views]
+
+    #
+    args.sh_files = [
+        file_path for pattern in args.sh_files for file_path in glob.glob(pattern)
+    ]
+
+    ic(args.mode)
+    ic(args.views)
+    ic(args.sh_files)
+    ic(args.output)
 
     # Get SH from csv file
-    sh_coeff_file = None
+    sh_coeff_files = args.sh_files
+    for sh_i, sh_file in tqdm(enumerate(sh_coeff_files), desc="File"):
+        output_dir = args.output[sh_i]
+        os.makedirs(output_dir, exist_ok=True)
 
-    fig = visualie_SH_on_3D_sphere(
-        sh_coeff,
-        camera_orientations=[R_front, R_back],
-        bg_color="black",
-        resolution=100,
-        show_extremes=True,
-    )
+        output_name_prefix = f"sh_vis_{config.get('dataset','scene')}_{split}"
+        if args.show_overflow:
+            output_name_prefix += "_show-overflow"
+
+        # read the csv:
+        df = pd.read_csv(sh_file)
+        df = df.apply(pd.to_numeric, errors="coerce")
+        sh_coeff = df.to_numpy()[0]
+
+        # Now, if 'sep' then for loop over -v and render each image
+        if args.mode == "sep":
+            for v_i, v_R in tqdm(enumerate(views_Rs), desc="View"):
+                # make a scphere and export it
+                fig = visualie_SH_on_3D_sphere(
+                    sh_coeff,
+                    camera_orientations=[v_R],
+                    bg_color="white",
+                    resolution=args.res,
+                    show_extremes=args.show_overflow,
+                )
+
+                # export image
+                output_name = f"{output_name_prefix}_{args.views[v_i]:03d}.png"
+                fig.savefig(
+                    f"{output_dir}/{output_name}", bbox_inches="tight", pad_inches=0
+                )
+
+                plt.close()
+
+        else:
+            fig = visualie_SH_on_3D_sphere(
+                sh_coeff,
+                camera_orientations=views_Rs,
+                bg_color="white",
+                resolution=args.res,
+                show_extremes=args.show_overflow,
+                plot_mode=args.mode,
+            )
+
+            output_name = f"{output_name_prefix}_{args.mode}_{'-'.join(args.views)}.png"
+            fig.savefig(f"{output_dir}/{output_name}", bbox_inches="tight", pad_inches=0)
+
+            plt.close()
 
     # plt.savefig("sphere.png", bbox_inches="tight", pad_inches=0)
     plt.show()
